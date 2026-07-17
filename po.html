@@ -75,6 +75,13 @@
     <button onclick="flip('B')">B↺向き</button>
   </div>
   <div class="row">
+    <span class="lbl">ポーズ</span>
+    <button class="fileBtn" id="poseABtn" onclick="poseA.click()">A：決めポーズ…</button>
+    <input type="file" id="poseA">
+    <button class="fileBtn" id="poseBBtn" onclick="poseB.click()">B：決めポーズ…</button>
+    <input type="file" id="poseB">
+  </div>
+  <div class="row">
     <span class="lbl">音声</span>
     <button class="fileBtn" onclick="audA.click()">A：音声…</button>
     <input type="file" id="audA" accept="audio/*">
@@ -224,14 +231,62 @@ class Speaker {
       this.root.remove(this.mann.group);
       this.vrm = vrm;
       this.root.add(vrm.scene);
-      // 腕を下ろす
-      const L = vrm.humanoid.getNormalizedBoneNode('leftUpperArm');
-      const R = vrm.humanoid.getNormalizedBoneNode('rightUpperArm');
-      if (L) L.rotation.z = -1.15;
-      if (R) R.rotation.z =  1.15;
+      // 腕の初期姿勢はここでは決め打ちしない（モデルごとに軸の向きが違うため信頼できない）
+      // → 決めポーズは「ポーズ読み込み」で外部ファイルから与える方式に統一
     }catch(e){
       alert('VRMの読み込みに失敗：' + e.message);
     }finally{ URL.revokeObjectURL(url); }
+  }
+  async loadPose(file){
+    try{
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const bd = data.BoneDefinition || data.boneDefinition;
+      if (!bd) throw new Error('BoneDefinitionが見つからない形式');
+      const map = {};
+      for (const key in bd){
+        const q = bd[key];
+        if (!q || typeof q.x !== 'number') continue;
+        // PascalCase（Hips, LeftUpperArm…）→ VRM Humanoidボーン名（hips, leftUpperArm…）
+        const boneName = key.charAt(0).toLowerCase() + key.slice(1);
+        map[boneName] = new THREE.Quaternion(q.x, q.y, q.z, q.w);
+      }
+      if (Object.keys(map).length === 0) throw new Error('有効なボーンが0件');
+      this.pose = map;
+    }catch(e){
+      alert('ポーズの読み込みに失敗：' + e.message);
+    }
+  }
+  /* ポーズ済みの体に、呼吸・発話・相槌の微振動を「上乗せ」する。
+     決めポーズ自体は壊さず、各ボーンの姿勢に小さな回転を掛け合わせるだけ。 */
+  applyPosedMotion(m){
+    const h = this.vrm.humanoid;
+    const setBone = (name, ex, ey, ez) => {
+      const base = this.pose[name];
+      const node = h.getNormalizedBoneNode(name);
+      if (!base || !node) return;
+      if (ex || ey || ez){
+        const wobble = new THREE.Quaternion().setFromEuler(new THREE.Euler(ex||0, ey||0, ez||0));
+        node.quaternion.copy(base).multiply(wobble);
+      } else {
+        node.quaternion.copy(base);
+      }
+    };
+    // 体幹：呼吸と揺れをしっかり乗せる
+    setBone('hips',   0, m.sway*0.15, 0);
+    setBone('spine',  m.breathe, m.sway*0.5, 0);
+    setBone('chest',  m.breathe*0.6, 0, 0);
+    setBone('upperChest', m.breathe*0.4, 0, 0);
+    setBone('neck',   m.talkNod*0.4 + m.nodAmt*0.4, 0, m.sway*0.2);
+    setBone('head',   m.talkNod + m.nodAmt, 0, m.sway*0.3);
+    // 腕・脚：決めポーズをほぼ保持しつつ、ごく微量だけ生きた揺らぎを混ぜる（2%程度の発想）
+    const micro = 0.012;
+    ['leftShoulder','rightShoulder','leftUpperArm','rightUpperArm',
+     'leftLowerArm','rightLowerArm','leftHand','rightHand',
+     'leftUpperLeg','rightUpperLeg','leftLowerLeg','rightLowerLeg',
+     'leftFoot','rightFoot','leftToes','rightToes'].forEach((name,i)=>{
+      setBone(name, Math.sin(m.t*0.8 + this.phase + i)*micro, 0, 0);
+    });
   }
   update(dt, t){
     const lv = this.level;
@@ -256,7 +311,12 @@ class Speaker {
     const sway    = this.speaking ? Math.sin(t*2.1 + this.phase) * 0.04 : Math.sin(t*0.7+this.phase)*0.012;
     const nodAmt  = Math.sin(this.nod * Math.PI) * 0.18;
 
-    if (this.vrm){
+    if (this.vrm && this.pose){
+      // 決めポーズが読み込み済み：ポーズ基準で微振動を上乗せ
+      this.applyPosedMotion({ breathe, talkNod, sway, nodAmt, t });
+      this.vrm.update(dt);
+    } else if (this.vrm){
+      // 決めポーズ未読み込み：暫定のT/Aポーズのまま最低限の首・体幹だけ動かす
       const h = this.vrm.humanoid;
       const head  = h.getNormalizedBoneNode('head');
       const spine = h.getNormalizedBoneNode('spine');
@@ -454,6 +514,16 @@ document.getElementById('startBtn').onclick = () => {
 };
 pickA.onchange = e => e.target.files[0] && spk.A.loadVRM(e.target.files[0]);
 pickB.onchange = e => e.target.files[0] && spk.B.loadVRM(e.target.files[0]);
+poseA.onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  spk.A.loadPose(f).then(() => { if (spk.A.pose) poseABtn.textContent = 'A：ポーズ✓'; });
+};
+poseB.onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  spk.B.loadPose(f).then(() => { if (spk.B.pose) poseBBtn.textContent = 'B：ポーズ✓'; });
+};
 audA.onchange = e => e.target.files[0] && hookAudio('A', e.target.files[0]);
 audB.onchange = e => e.target.files[0] && hookAudio('B', e.target.files[0]);
 pseudoBtn.onclick = () => {

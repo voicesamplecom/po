@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>連弾スイッチャー v1 — 疑似対談×自動カメラ検証</title>
+<style>
+  :root{
+    --bg:#0c0f14; --panel:#151b24; --panel2:#1c2430;
+    --line:#2a3442; --text:#dce4ee; --dim:#7d8a9c;
+    --tally:#ff4136; --meterA:#ffd166; --meterB:#6ec6ff;
+    --mono:"SF Mono","Menlo",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
+    font-family:-apple-system,"Hiragino Sans",sans-serif;font-size:14px}
+  #stage{position:absolute;inset:0}
+  canvas{display:block}
+
+  /* ── タリー（現在ショット表示）── */
+  #tally{position:absolute;top:12px;left:12px;display:flex;align-items:center;gap:10px;
+    background:rgba(12,15,20,.82);border:1px solid var(--line);border-radius:8px;
+    padding:8px 14px;font-family:var(--mono);font-size:15px;letter-spacing:.06em;
+    backdrop-filter:blur(6px)}
+  #tallyDot{width:10px;height:10px;border-radius:50%;background:var(--tally);
+    box-shadow:0 0 8px var(--tally);animation:blink 1.2s infinite}
+  @keyframes blink{50%{opacity:.35}}
+  #shotLog{position:absolute;top:56px;left:12px;font-family:var(--mono);font-size:11px;
+    color:var(--dim);line-height:1.7;pointer-events:none}
+
+  /* ── コントロールデッキ ── */
+  #deck{position:absolute;left:0;right:0;bottom:0;background:var(--panel);
+    border-top:1px solid var(--line);padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+    display:flex;flex-direction:column;gap:8px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .lbl{color:var(--dim);font-size:11px;width:58px;flex-shrink:0}
+  button{background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:8px;padding:9px 13px;font-size:13px;font-family:inherit}
+  button:active{background:#26303f}
+  button.on{background:#31465f;border-color:#4a6b93}
+  button.tallyOn{background:#5b1f1c;border-color:var(--tally)}
+  input[type=file]{display:none}
+  .fileBtn{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ── レベルメーター ── */
+  .meterWrap{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px}
+  .meter{width:90px;height:8px;background:#0a0d11;border:1px solid var(--line);
+    border-radius:4px;overflow:hidden}
+  .meter>i{display:block;height:100%;width:0%;transition:width .06s linear}
+  #meterA i{background:var(--meterA)} #meterB i{background:var(--meterB)}
+
+  /* ── スタートオーバーレイ ── */
+  #overlay{position:absolute;inset:0;background:rgba(8,10,14,.92);z-index:20;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+    text-align:center;padding:24px}
+  #overlay h1{font-size:20px;font-weight:600;letter-spacing:.04em}
+  #overlay p{color:var(--dim);line-height:1.8;max-width:420px}
+  #startBtn{font-size:17px;padding:14px 42px;background:#31465f;border-color:#4a6b93}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="tally"><span id="tallyDot"></span><span id="tallyText">STANDBY</span></div>
+<div id="shotLog"></div>
+
+<div id="deck">
+  <div class="row">
+    <span class="lbl">モデル</span>
+    <button class="fileBtn" onclick="pickA.click()">話者A：VRM…</button>
+    <input type="file" id="pickA" accept=".vrm">
+    <button class="fileBtn" onclick="pickB.click()">話者B：VRM…</button>
+    <input type="file" id="pickB" accept=".vrm">
+    <button onclick="flip('A')">A↺向き</button>
+    <button onclick="flip('B')">B↺向き</button>
+  </div>
+  <div class="row">
+    <span class="lbl">音声</span>
+    <button class="fileBtn" onclick="audA.click()">A：音声…</button>
+    <input type="file" id="audA" accept="audio/*">
+    <button class="fileBtn" onclick="audB.click()">B：音声…</button>
+    <input type="file" id="audB" accept="audio/*">
+    <button id="pseudoBtn" class="on">疑似トーク</button>
+    <button id="playBtn">▶ 再生</button>
+  </div>
+  <div class="row">
+    <span class="lbl">カメラ</span>
+    <button id="autoBtn" class="on">AUTO</button>
+    <button data-shot="WIDE">引き</button>
+    <button data-shot="TWO">2ショット</button>
+    <button data-shot="CU_A">Aアップ</button>
+    <button data-shot="CU_B">Bアップ</button>
+    <span style="flex:1"></span>
+    <span class="meterWrap">A<span class="meter" id="meterA"><i></i></span></span>
+    <span class="meterWrap">B<span class="meter" id="meterB"><i></i></span></span>
+  </div>
+</div>
+
+<div id="overlay">
+  <h1>連弾スイッチャー v1</h1>
+  <p>2体のアバターで疑似対談を再生し、音声レベルから<br>
+     インタビュー番組式の自動カメラワークを検証するテストリグ。<br><br>
+     VRM・音声ファイルがなくても、デモ人形＋疑似トークで<br>
+     カメラロジックだけ先に確認できる。</p>
+  <button id="startBtn">スタート</button>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2.1.1/lib/three-vrm.module.min.js"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+
+/* ══════════ 基本セットアップ ══════════ */
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14181f);
+scene.fog = new THREE.Fog(0x14181f, 6, 14);
+
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 50);
+
+function resize(){
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+/* ── 照明（スタジオ三灯）── */
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const key = new THREE.DirectionalLight(0xfff2e0, 1.5);
+key.position.set(1.5, 3, 2.5); scene.add(key);
+const fill = new THREE.DirectionalLight(0xbcd4ff, 0.5);
+fill.position.set(-2, 2, 1.5); scene.add(fill);
+const back = new THREE.DirectionalLight(0x8899ff, 0.8);
+back.position.set(0, 3, -3); scene.add(back);
+
+/* ── 簡易セット（床・壁・ラグ）── */
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(20, 20),
+  new THREE.MeshStandardMaterial({ color:0x1b212b, roughness:0.9 }));
+floor.rotation.x = -Math.PI/2; scene.add(floor);
+
+const rug = new THREE.Mesh(
+  new THREE.CircleGeometry(1.6, 48),
+  new THREE.MeshStandardMaterial({ color:0x2b3648, roughness:1 }));
+rug.rotation.x = -Math.PI/2; rug.position.y = 0.005; scene.add(rug);
+
+const wall = new THREE.Mesh(
+  new THREE.PlaneGeometry(14, 5),
+  new THREE.MeshStandardMaterial({ color:0x232b38, roughness:1 }));
+wall.position.set(0, 2.5, -2.5); scene.add(wall);
+
+const panel = new THREE.Mesh(
+  new THREE.PlaneGeometry(3.2, 1.8),
+  new THREE.MeshStandardMaterial({ color:0x161c26, roughness:0.6 }));
+panel.position.set(0, 1.9, -2.45); scene.add(panel);
+
+/* ══════════ 話者（VRM or デモ人形）══════════ */
+const SEAT = {
+  A: { x:-0.7, ry: 0.42 },
+  B: { x: 0.7, ry:-0.42 },
+};
+
+function makeMannequin(color){
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color, roughness:0.7 });
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.16, 0.62, 6, 12), mat);
+  body.position.y = 0.85; g.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 24, 18), mat);
+  head.position.y = 1.44; g.add(head);
+  const mouth = new THREE.Mesh(
+    new THREE.SphereGeometry(0.03, 12, 8),
+    new THREE.MeshStandardMaterial({ color:0x331111 }));
+  mouth.position.set(0, 1.40, 0.13); g.add(mouth);
+  return { group:g, head, mouth, body };
+}
+
+class Speaker {
+  constructor(id, color){
+    this.id = id;
+    this.root = new THREE.Group();
+    this.root.position.x = SEAT[id].x;
+    this.root.rotation.y = SEAT[id].ry;
+    scene.add(this.root);
+
+    this.vrm = null;
+    this.mann = makeMannequin(color);
+    this.root.add(this.mann.group);
+
+    this.level = 0;          // 平滑化した音量 0..1
+    this.speaking = false;
+    this.nod = 0; this.nodT = 0;   // 相槌
+    this.phase = Math.random()*10;
+  }
+  headWorld(v){
+    const src = this.vrm
+      ? this.vrm.humanoid.getNormalizedBoneNode('head')
+      : this.mann.head;
+    return src.getWorldPosition(v);
+  }
+  async loadVRM(file){
+    const url = URL.createObjectURL(file);
+    const loader = new GLTFLoader();
+    loader.register(p => new VRMLoaderPlugin(p));
+    try{
+      const gltf = await loader.loadAsync(url);
+      const vrm = gltf.userData.vrm;
+      VRMUtils.removeUnnecessaryVertices(gltf.scene);
+      VRMUtils.rotateVRM0(vrm);
+      if (this.vrm) this.root.remove(this.vrm.scene);
+      this.root.remove(this.mann.group);
+      this.vrm = vrm;
+      this.root.add(vrm.scene);
+      // 腕を下ろす
+      const L = vrm.humanoid.getNormalizedBoneNode('leftUpperArm');
+      const R = vrm.humanoid.getNormalizedBoneNode('rightUpperArm');
+      if (L) L.rotation.z = -1.15;
+      if (R) R.rotation.z =  1.15;
+    }catch(e){
+      alert('VRMの読み込みに失敗：' + e.message);
+    }finally{ URL.revokeObjectURL(url); }
+  }
+  update(dt, t){
+    const lv = this.level;
+    // 口パク
+    if (this.vrm?.expressionManager){
+      const v = Math.min(1, lv * 3.2) * (0.75 + 0.25*Math.sin(t*22 + this.phase));
+      try{ this.vrm.expressionManager.setValue('aa', Math.max(0, v)); }catch(e){}
+    } else {
+      const s = 1 + Math.min(1, lv*4) * (1.6 + Math.sin(t*24)*0.8);
+      this.mann.mouth.scale.set(s, s, s);
+    }
+    // 相槌タイマー（聞き手のとき時々うなずく）
+    if (!this.speaking){
+      this.nodT -= dt;
+      if (this.nodT <= 0){ this.nod = 1; this.nodT = 2.5 + Math.random()*4; }
+    }
+    if (this.nod > 0) this.nod = Math.max(0, this.nod - dt*2.2);
+
+    // 姿勢（呼吸＋発話ジェスチャー＋相槌）
+    const breathe = Math.sin(t*1.4 + this.phase) * 0.015;
+    const talkNod = this.speaking ? Math.sin(t*4.5 + this.phase) * 0.05 * Math.min(1,lv*5) : 0;
+    const sway    = this.speaking ? Math.sin(t*2.1 + this.phase) * 0.04 : Math.sin(t*0.7+this.phase)*0.012;
+    const nodAmt  = Math.sin(this.nod * Math.PI) * 0.18;
+
+    if (this.vrm){
+      const h = this.vrm.humanoid;
+      const head  = h.getNormalizedBoneNode('head');
+      const spine = h.getNormalizedBoneNode('spine');
+      const chest = h.getNormalizedBoneNode('chest') || spine;
+      if (head){ head.rotation.x = talkNod + nodAmt + breathe*0.5; head.rotation.z = sway*0.5; }
+      if (spine){ spine.rotation.y = sway; spine.rotation.x = breathe; }
+      if (chest && chest!==spine){ chest.rotation.x = breathe*0.6; }
+      this.vrm.update(dt);
+    } else {
+      this.mann.head.rotation.x = talkNod + nodAmt;
+      this.mann.group.rotation.z = sway*0.4;
+      this.mann.group.position.y = breathe*0.3;
+    }
+  }
+}
+const spk = { A: new Speaker('A', 0xd9b38c), B: new Speaker('B', 0x8cb4d9) };
+window.flip = id => { spk[id].root.rotation.y += Math.PI; };
+
+/* ══════════ 音声入力 ══════════ */
+let audioCtx = null;
+const chan = {
+  A: { el:null, analyser:null, buf:null, raw:0 },
+  B: { el:null, analyser:null, buf:null, raw:0 },
+};
+let pseudoMode = true;
+
+function hookAudio(id, file){
+  if (!audioCtx) return;
+  const c = chan[id];
+  if (c.el){ c.el.pause(); }
+  const el = new Audio(URL.createObjectURL(file));
+  el.loop = true;
+  const src = audioCtx.createMediaElementSource(el);
+  const an  = audioCtx.createAnalyser();
+  an.fftSize = 512;
+  src.connect(an); an.connect(audioCtx.destination);
+  c.el = el; c.analyser = an; c.buf = new Uint8Array(an.fftSize);
+  pseudoMode = false; pseudoBtn.classList.remove('on');
+}
+
+function readLevels(){
+  for (const id of ['A','B']){
+    const c = chan[id];
+    if (!pseudoMode && c.analyser){
+      c.analyser.getByteTimeDomainData(c.buf);
+      let sum = 0;
+      for (let i=0;i<c.buf.length;i++){ const d=(c.buf[i]-128)/128; sum += d*d; }
+      c.raw = Math.sqrt(sum / c.buf.length);
+    }
+    // 平滑化（アタック速・リリース遅）
+    const s = spk[id];
+    const target = c.raw;
+    const k = target > s.level ? 0.35 : 0.07;
+    s.level += (target - s.level) * k;
+    s.speaking = s.speaking ? s.level > 0.022 : s.level > 0.04; // ヒステリシス
+  }
+}
+
+/* ── 疑似トーク生成（交互発話＋間＋たまに食い気味）── */
+const pseudo = { cur:'A', t:0, dur:3, gap:false };
+function pseudoTick(dt, t){
+  if (!pseudoMode) return;
+  pseudo.t += dt;
+  if (pseudo.t >= pseudo.dur){
+    pseudo.t = 0;
+    if (!pseudo.gap){
+      pseudo.gap = true;
+      pseudo.dur = Math.random() < 0.25 ? 0 : 0.25 + Math.random()*0.7; // 25%で食い気味
+    } else {
+      pseudo.gap = false;
+      pseudo.cur = pseudo.cur === 'A' ? 'B' : 'A';
+      pseudo.dur = 1.8 + Math.random()*4.5;
+    }
+  }
+  for (const id of ['A','B']){
+    const active = !pseudo.gap && pseudo.cur === id;
+    const env = active ? 0.06 + 0.05*Math.abs(Math.sin(t*3.1 + (id==='A'?0:2)))
+                        * (0.6 + 0.4*Math.sin(t*0.9)) : 0;
+    chan[id].raw = env;
+  }
+}
+
+/* ══════════ カメラ・スイッチャー ══════════ */
+const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
+function headA(){ return spk.A.headWorld(tmpA); }
+function headB(){ return spk.B.headWorld(tmpB); }
+
+// ショット定義：from→to（ゆっくり寄る）＋注視点
+function shotDef(name){
+  const hA = headA().clone(), hB = headB().clone();
+  const mid = hA.clone().add(hB).multiplyScalar(0.5);
+  switch(name){
+    case 'WIDE':  return { from:v(0,1.55,3.6),  to:v(0,1.5,3.15),  look:v(0,1.15,0) };
+    case 'TWO':   return { from:v(0,hA.y-0.05,2.35), to:v(0,hA.y-0.03,2.05), look:mid.setY(mid.y-0.1) };
+    case 'CU_A':  return cu(hA, +1);
+    case 'CU_B':  return cu(hB, -1);
+    case 'LIS_A': return lis(hA, +1);
+    case 'LIS_B': return lis(hB, -1);
+  }
+  function v(x,y,z){ return new THREE.Vector3(x,y,z); }
+  function cu(h, side){ // side: Aは+（中央寄りから狙う）
+    const varSide = shotVariant ? 0.55 : 0.18;
+    return {
+      from: v(h.x + side*varSide, h.y+0.02, 1.35),
+      to:   v(h.x + side*(varSide*0.8), h.y+0.03, 1.05),
+      look: h.clone() };
+  }
+  function lis(h, side){ // 聞き手リアクション：やや広め
+    return {
+      from: v(h.x + side*0.35, h.y, 1.75),
+      to:   v(h.x + side*0.3,  h.y, 1.55),
+      look: h.clone().setY(h.y-0.05) };
+  }
+}
+let shotVariant = false;
+
+const sw = {
+  auto: true,
+  name: 'WIDE', def: null, age: 0, maxAge: 6,
+  pendingSpk: null, pendingT: 0,
+  silence: 0, cutCount: 0,
+};
+function cut(name, why){
+  if (name === sw.name && !['CU_A','CU_B'].includes(name)) return;
+  shotVariant = !shotVariant;
+  sw.name = name; sw.def = shotDef(name); sw.age = 0;
+  sw.maxAge = name.startsWith('LIS') ? 1.6+Math.random() : 5 + Math.random()*3.5;
+  sw.cutCount++;
+  const label = { WIDE:'引き', TWO:'2ショット', CU_A:'Aアップ', CU_B:'Bアップ',
+                  LIS_A:'Aリアクション', LIS_B:'Bリアクション' }[name];
+  tallyText.textContent = `CUT ${String(sw.cutCount).padStart(2,'0')}｜${label}`;
+  const line = document.createElement('div');
+  line.textContent = `${label}  ←${why}`;
+  shotLog.prepend(line);
+  while (shotLog.children.length > 5) shotLog.lastChild.remove();
+}
+
+function switcherTick(dt){
+  const a = spk.A.speaking, b = spk.B.speaking;
+  const talker = a && b ? 'both' : a ? 'A' : b ? 'B' : null;
+  sw.age += dt;
+  sw.silence = talker ? 0 : sw.silence + dt;
+  if (!sw.auto) return;
+
+  // 話者交代の検出（0.45秒の確認バッファ）
+  const curCU = sw.name === 'CU_A' ? 'A' : sw.name === 'CU_B' ? 'B' : null;
+  if (talker === 'A' || talker === 'B'){
+    if (talker !== curCU){
+      if (sw.pendingSpk === talker){
+        sw.pendingT += dt;
+        if (sw.pendingT > 0.45 && sw.age > 1.6){
+          cut('CU_' + talker, '話者交代'); sw.pendingSpk = null;
+        }
+      } else { sw.pendingSpk = talker; sw.pendingT = 0; }
+    } else sw.pendingSpk = null;
+  }
+  // 同時発話 → 2ショット
+  if (talker === 'both' && sw.name !== 'TWO' && sw.age > 1.4) cut('TWO','同時発話');
+  // 沈黙 → 引き
+  if (sw.silence > 2.2 && sw.name !== 'WIDE') cut('WIDE','沈黙');
+  // 長回し → リアクション or 2ショット
+  if (sw.age > sw.maxAge){
+    if (sw.name === 'CU_A' && talker === 'A')
+      cut(Math.random() < 0.6 ? 'LIS_B' : 'TWO', '長回し');
+    else if (sw.name === 'CU_B' && talker === 'B')
+      cut(Math.random() < 0.6 ? 'LIS_A' : 'TWO', '長回し');
+    else if (sw.name.startsWith('LIS'))
+      cut(talker === 'A' ? 'CU_A' : talker === 'B' ? 'CU_B' : 'TWO', '戻し');
+    else if (talker === 'A' || talker === 'B')
+      cut('CU_' + talker, 'テンポ');
+    else sw.age = 0;
+  }
+}
+
+function cameraTick(){
+  if (!sw.def) return;
+  const p = Math.min(1, sw.age / Math.max(sw.maxAge, 4));
+  const e = 1 - Math.pow(1-p, 2); // ease-out で寄る
+  camera.position.lerpVectors(sw.def.from, sw.def.to, e);
+  camera.lookAt(sw.def.look);
+}
+
+/* ══════════ UI 配線 ══════════ */
+const tallyText = document.getElementById('tallyText');
+const shotLog = document.getElementById('shotLog');
+const pseudoBtn = document.getElementById('pseudoBtn');
+const playBtn = document.getElementById('playBtn');
+const autoBtn = document.getElementById('autoBtn');
+let playing = false;
+
+document.getElementById('startBtn').onclick = () => {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  document.getElementById('overlay').remove();
+  cut('WIDE','開始');
+};
+pickA.onchange = e => e.target.files[0] && spk.A.loadVRM(e.target.files[0]);
+pickB.onchange = e => e.target.files[0] && spk.B.loadVRM(e.target.files[0]);
+audA.onchange = e => e.target.files[0] && hookAudio('A', e.target.files[0]);
+audB.onchange = e => e.target.files[0] && hookAudio('B', e.target.files[0]);
+pseudoBtn.onclick = () => {
+  pseudoMode = !pseudoMode;
+  pseudoBtn.classList.toggle('on', pseudoMode);
+};
+playBtn.onclick = () => {
+  playing = !playing;
+  playBtn.textContent = playing ? '⏸ 停止' : '▶ 再生';
+  playBtn.classList.toggle('tallyOn', playing);
+  for (const id of ['A','B']){
+    const el = chan[id].el;
+    if (el){ playing ? el.play() : el.pause(); }
+  }
+  if (audioCtx?.state === 'suspended') audioCtx.resume();
+};
+autoBtn.onclick = () => {
+  sw.auto = !sw.auto;
+  autoBtn.classList.toggle('on', sw.auto);
+};
+document.querySelectorAll('[data-shot]').forEach(b => {
+  b.onclick = () => { sw.auto = false; autoBtn.classList.remove('on'); cut(b.dataset.shot, '手動'); };
+});
+
+/* ══════════ メインループ ══════════ */
+const clock = new THREE.Clock();
+function loop(){
+  requestAnimationFrame(loop);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+  if (playing){ pseudoTick(dt, t); } else { chan.A.raw = 0; chan.B.raw = 0; }
+  readLevels();
+  spk.A.update(dt, t);
+  spk.B.update(dt, t);
+  if (playing) switcherTick(dt);
+  cameraTick();
+  document.querySelector('#meterA i').style.width = Math.min(100, spk.A.level*900) + '%';
+  document.querySelector('#meterB i').style.width = Math.min(100, spk.B.level*900) + '%';
+  renderer.render(scene, camera);
+}
+loop();
+</script>
+</body>
+</html>

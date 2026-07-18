@@ -460,12 +460,24 @@ function pickElevation(){
   if (r < 0.42) return 0.30;       // 見下ろし（ハイアングル）
   return 0.07;                     // ほぼ目線
 }
+/* 抜け（ルッキングルーム）：アップでは頭を画面中央に置かず、
+   視線の先——つまり相手のいる方向——に空間を空ける。
+   注視点を「頭」から「頭と相手の間」へ少しずらすと、
+   頭が画面の端へ寄り、視線側が抜ける構図になる。 */
+function lookRoomOffset(selfHead, otherHead, amount){
+  const dir = otherHead.clone().sub(selfHead); dir.y = 0;
+  if (dir.lengthSq() < 1e-6) return new THREE.Vector3();
+  return dir.normalize().multiplyScalar(amount);
+}
 function setTarget(name, why){
   if (name === target.name) return;
   const prevName = target.name;
   target.name = name; target.age = 0;
   target.maxAge = name.startsWith('LIS') ? 2.2 + Math.random()*1.5 : 5.5 + Math.random()*4;
   target.cutCount++;
+  // スライダー移動：ショットごとに向きと速さを決め、滞在中ゆっくり横に流れる
+  target.slide = (Math.random() < 0.5 ? -1 : 1) * (0.012 + Math.random()*0.014);
+  target.lookOffset = new THREE.Vector3();
 
   if (name === 'ATMO'){
     camera.position.copy(ATMO_POS);
@@ -478,23 +490,28 @@ function setTarget(name, why){
       case 'WIDE':
         target.anchor.copy(mid).setY(1.35);
         target.radius = fitDistance(1.8, 3.6); target.azBias = 0.18;
-        target.elBias = Math.random() < 0.3 ? 0.34 : 0.15; break; // たまに見下ろしの俯瞰
+        target.elBias = Math.random() < 0.3 ? 0.34 : 0.15;
+        target.slide *= 0.5; break; // 引きはスライドを控えめに
       case 'TWO':
         target.anchor.copy(mid).setY(mid.y - 0.08);
         target.radius = fitDistance(Math.abs(hA.x - hB.x)/2 + 0.62, 2.4); target.azBias = 0.12;
         target.elBias = 0.09; break;
-      case 'CU_A': // Bの肩越しに近い角度でAを狙う（OTS寄り）
+      case 'CU_A': // Bの肩越しに近い角度でAを狙う（OTS寄り）＋Bの方向へ抜け
         target.anchor.copy(hA); target.radius = 1.6; target.azBias = 0.55;
-        target.elBias = pickElevation(); break;
+        target.elBias = pickElevation();
+        target.lookOffset = lookRoomOffset(hA, hB, 0.22); break;
       case 'CU_B':
         target.anchor.copy(hB); target.radius = 1.6; target.azBias = -0.55;
-        target.elBias = pickElevation(); break;
-      case 'LIS_A': // 聞き手のリアクションは少し見上げ気味にして親密さを出す
+        target.elBias = pickElevation();
+        target.lookOffset = lookRoomOffset(hB, hA, 0.22); break;
+      case 'LIS_A': // 聞き手のリアクションは少し見上げ気味＋抜けはやや控えめ
         target.anchor.copy(hA); target.radius = 2.05; target.azBias = 0.48;
-        target.elBias = -0.1; break;
+        target.elBias = -0.1;
+        target.lookOffset = lookRoomOffset(hA, hB, 0.16); break;
       case 'LIS_B':
         target.anchor.copy(hB); target.radius = 2.05; target.azBias = -0.48;
-        target.elBias = -0.1; break;
+        target.elBias = -0.1;
+        target.lookOffset = lookRoomOffset(hB, hA, 0.16); break;
     }
 
     const isCUSwap = prevName && prevName.startsWith('CU') && name.startsWith('CU') && prevName !== name;
@@ -508,7 +525,7 @@ function setTarget(name, why){
       cam.el = target.elBias;
       const pos = sphericalPos(cam.anchor, cam.az, cam.el, cam.radius);
       camera.position.copy(pos);
-      camLook.copy(cam.anchor);
+      camLook.copy(cam.anchor).add(target.lookOffset);
       camera.lookAt(camLook);
     }
     target._lastHardCut = hardCut;
@@ -581,17 +598,19 @@ function cameraTick(dt, t){
   cam.anchor.lerp(target.anchor, kFollow);
   cam.radius += (target.radius - cam.radius) * (1 - Math.exp(-0.75 * dt));
 
-  // 常時の動きは「手持ちの微振動」程度に抑える（大きく回り込むパンは廃止）
+  // 常時の動きは「手持ちの微振動」＋ショット中ゆっくり横へ流れるスライダー移動
   const wFast = Math.sin(t*0.55 + cam.driftSeed*3.3) * 0.012;
   const tightness = THREE.MathUtils.clamp(cam.radius / 3.2, 0.25, 1);
-  const azTarget = target.azBias + wFast * tightness;
+  const slide = (target.slide || 0) * Math.min(target.age, target.maxAge); // 滞在時間ぶん横に流れる
+  const azTarget = target.azBias + slide + wFast * tightness;
   const elTarget = target.elBias + wFast * 0.4 * tightness;
   cam.az += (azTarget - cam.az) * (1 - Math.exp(-0.7 * dt));
   cam.el += (elTarget - cam.el) * (1 - Math.exp(-0.7 * dt));
 
   const pos = sphericalPos(cam.anchor, cam.az, cam.el, cam.radius);
   camera.position.lerp(pos, 1 - Math.exp(-1.4 * dt));
-  camLook.lerp(cam.anchor, 1 - Math.exp(-1.6 * dt));
+  const lookTarget = cam.anchor.clone().add(target.lookOffset || new THREE.Vector3());
+  camLook.lerp(lookTarget, 1 - Math.exp(-1.6 * dt));
   camera.lookAt(camLook);
 }
 

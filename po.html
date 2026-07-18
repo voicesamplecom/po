@@ -248,9 +248,12 @@ class Speaker {
       for (const key in bd){
         const q = bd[key];
         if (!q || typeof q.x !== 'number') continue;
+        if (key === 'HipsPosition') continue; // 位置情報は現状未使用
         // PascalCase（Hips, LeftUpperArm…）→ VRM Humanoidボーン名（hips, leftUpperArm…）
         const boneName = key.charAt(0).toLowerCase() + key.slice(1);
-        map[boneName] = new THREE.Quaternion(q.x, q.y, q.z, q.w);
+        // Unity(左手系)→Three.js(右手系)の座標系変換：x,yの符号を反転（ReverseZ変換）。
+        // これを挟まないと膝・肘が逆に折れ、前後が鏡写しになる（モーキャプスタジオで検証済み）
+        map[boneName] = new THREE.Quaternion(-q.x, -q.y, q.z, q.w);
       }
       if (Object.keys(map).length === 0) throw new Error('有効なボーンが0件');
       this.pose = map;

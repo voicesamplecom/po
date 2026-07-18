@@ -399,77 +399,70 @@ function pseudoTick(dt, t){
   }
 }
 
-/* ══════════ カメラ・スイッチャー ══════════ */
+/* ══════════ カメラ：漂う一台のカメラ ══════════ */
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
 function headA(){ return spk.A.headWorld(tmpA); }
 function headB(){ return spk.B.headWorld(tmpB); }
-let shotVariant = false;
-const driftSeed = Math.random() * 10;
 
-/* 「今どこを狙うべきか」を毎フレーム計算する。
-   頭の位置を凍結せず常に読み直すので、寄っている最中に体が揺れても
-   カメラが同じ人物を追い続ける＝対談番組のカメラ操作に近づく。 */
-function frameTarget(name){
-  const hA = headA().clone(), hB = headB().clone();
-  const mid = hA.clone().add(hB).multiplyScalar(0.5);
-  const aspect = camera.aspect || 1;
-  const vFov = camera.fov * Math.PI / 180;
-  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect); // 実画面の横画角
-  const fit = (halfWidth, minDist) => Math.max(minDist, halfWidth / Math.tan(hFov / 2));
-
-  switch(name){
-    case 'WIDE': {
-      const d = fit(1.55, 3.0);
-      return { pos: v(0, 1.55, d), look: v(0, 1.15, 0) };
-    }
-    case 'TWO': {
-      const sep = Math.abs(hA.x - hB.x);
-      const d = fit(sep / 2 + 0.62, 1.7); // 肩幅ぶんの余白込みで、画角から逆算した距離
-      return { pos: v(mid.x * 0.1, mid.y - 0.05, mid.z + d),
-                look: v(mid.x, mid.y - 0.12, mid.z) };
-    }
-    case 'CU_A': return closeUp(hA, +1);
-    case 'CU_B': return closeUp(hB, -1);
-    case 'LIS_A': return reaction(hA, +1);
-    case 'LIS_B': return reaction(hB, -1);
-  }
-  function v(x, y, z){ return new THREE.Vector3(x, y, z); }
-  function closeUp(h, side){
-    const off = shotVariant ? 0.5 : 0.16;
-    return { pos: v(h.x + side*off, h.y + 0.02, h.z + 1.1),
-              look: v(h.x + side*(off*0.75), h.y + 0.02, h.z) };
-  }
-  function reaction(h, side){
-    return { pos: v(h.x + side*0.32, h.y, h.z + 1.55),
-              look: v(h.x + side*0.28, h.y - 0.05, h.z) };
-  }
-}
-
-const sw = {
-  auto: true,
-  name: 'WIDE', age: 0, maxAge: 6, pushDur: 1.2,
-  pendingSpk: null, pendingT: 0,
-  silence: 0, cutCount: 0,
+/* 参考動画の観察：カットで切り替わっているのではなく、
+   一台のカメラが常にゆっくり動き続けていて、時々被写体に寄る。
+   なので「ショットへ瞬間移動→静止」ではなく、
+   常時「アンカー（今どこを見てるか）」「距離」「回り込み角度」を
+   ゆっくり変化させ続ける球面座標のリグにする。 */
+const cam = {
+  anchor: new THREE.Vector3(0, 1.35, 0),
+  radius: 3.2,
+  az: 0.18,          // 現在の水平回り込み角（ラジアン）
+  el: 0.05,          // 現在の仰角
+  driftSeed: Math.random() * 10,
+  atmoT: 5 + Math.random()*5,  // 次の「環境ショット」までの残り時間
+  atmo: 0,                     // 環境ショットの効き具合 0..1
 };
 const camLook = new THREE.Vector3(0, 1.15, 0);
 
-function cut(name, why){
-  if (name === sw.name && !['CU_A','CU_B'].includes(name)) return;
-  shotVariant = !shotVariant;
-  sw.name = name; sw.age = 0;
-  sw.maxAge = name.startsWith('LIS') ? 1.6 + Math.random() : 5 + Math.random()*3.5;
-  sw.pushDur = name.startsWith('LIS') ? 0.7 : 1.2;
-  sw.cutCount++;
+const target = {
+  auto: true,
+  name: 'WIDE', age: 0, maxAge: 6,
+  anchor: new THREE.Vector3(0, 1.35, 0), radius: 3.2, azBias: 0.18,
+  pendingSpk: null, pendingT: 0, silence: 0, cutCount: 0,
+};
 
-  // ハードカット：目標のやや後ろへ一旦ジャンプしてから寄る（TVのスイッチングに寄せる）
-  const t0 = frameTarget(name);
-  const dir = t0.pos.clone().sub(t0.look).normalize();
-  camera.position.copy(t0.pos).addScaledVector(dir, 0.85);
-  camLook.copy(t0.look);
+function fitDistance(halfWidth, minDist){
+  const aspect = camera.aspect || 1;
+  const vFov = camera.fov * Math.PI / 180;
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+  return Math.max(minDist, halfWidth / Math.tan(hFov / 2));
+}
 
+/* setTarget：カメラを瞬間移動させない。狙い（アンカー・距離・回り込みの
+   バイアス）だけを更新し、実際の移動はcameraTick側でゆっくり追いつかせる。 */
+function setTarget(name, why){
+  if (name === target.name) return;
+  target.name = name; target.age = 0;
+  target.maxAge = name.startsWith('LIS') ? 2.2 + Math.random()*1.5 : 5.5 + Math.random()*4;
+  target.cutCount++;
+
+  const hA = headA().clone(), hB = headB().clone();
+  const mid = hA.clone().lerp(hB, 0.5);
+  switch(name){
+    case 'WIDE':
+      target.anchor.copy(mid).setY(1.35);
+      target.radius = fitDistance(1.6, 3.2); target.azBias = 0.18; break;
+    case 'TWO':
+      target.anchor.copy(mid).setY(mid.y - 0.08);
+      target.radius = fitDistance(Math.abs(hA.x - hB.x)/2 + 0.62, 1.8); target.azBias = 0.12; break;
+    case 'CU_A':
+      target.anchor.copy(hA); target.radius = 1.05; target.azBias = 0.36; break;
+    case 'CU_B':
+      target.anchor.copy(hB); target.radius = 1.05; target.azBias = -0.36; break;
+    case 'LIS_A':
+      target.anchor.copy(hA); target.radius = 1.6; target.azBias = 0.58; break;
+    case 'LIS_B':
+      target.anchor.copy(hB); target.radius = 1.6; target.azBias = -0.58; break;
+  }
   const label = { WIDE:'引き', TWO:'2ショット', CU_A:'Aアップ', CU_B:'Bアップ',
                   LIS_A:'Aリアクション', LIS_B:'Bリアクション' }[name];
-  tallyText.textContent = `CUT ${String(sw.cutCount).padStart(2,'0')}｜${label}`;
+  tallyText.textContent = `${String(target.cutCount).padStart(2,'0')}｜${label}`;
   const line = document.createElement('div');
   line.textContent = `${label}  ←${why}`;
   shotLog.prepend(line);
@@ -479,56 +472,72 @@ function cut(name, why){
 function switcherTick(dt){
   const a = spk.A.speaking, b = spk.B.speaking;
   const talker = a && b ? 'both' : a ? 'A' : b ? 'B' : null;
-  sw.age += dt;
-  sw.silence = talker ? 0 : sw.silence + dt;
-  if (!sw.auto) return;
+  target.age += dt;
+  target.silence = talker ? 0 : target.silence + dt;
+  if (!target.auto) return;
 
-  // 話者交代の検出（0.45秒の確認バッファ）
-  const curCU = sw.name === 'CU_A' ? 'A' : sw.name === 'CU_B' ? 'B' : null;
+  const curCU = target.name === 'CU_A' ? 'A' : target.name === 'CU_B' ? 'B' : null;
   if (talker === 'A' || talker === 'B'){
     if (talker !== curCU){
-      if (sw.pendingSpk === talker){
-        sw.pendingT += dt;
-        if (sw.pendingT > 0.45 && sw.age > 1.6){
-          cut('CU_' + talker, '話者交代'); sw.pendingSpk = null;
+      if (target.pendingSpk === talker){
+        target.pendingT += dt;
+        if (target.pendingT > 0.45 && target.age > 1.6){
+          setTarget('CU_' + talker, '話者交代'); target.pendingSpk = null;
         }
-      } else { sw.pendingSpk = talker; sw.pendingT = 0; }
-    } else sw.pendingSpk = null;
+      } else { target.pendingSpk = talker; target.pendingT = 0; }
+    } else target.pendingSpk = null;
   }
-  // 同時発話 → 2ショット
-  if (talker === 'both' && sw.name !== 'TWO' && sw.age > 1.4) cut('TWO','同時発話');
-  // 沈黙 → 引き
-  if (sw.silence > 2.2 && sw.name !== 'WIDE') cut('WIDE','沈黙');
-  // 長回し → リアクション or 2ショット
-  if (sw.age > sw.maxAge){
-    if (sw.name === 'CU_A' && talker === 'A')
-      cut(Math.random() < 0.6 ? 'LIS_B' : 'TWO', '長回し');
-    else if (sw.name === 'CU_B' && talker === 'B')
-      cut(Math.random() < 0.6 ? 'LIS_A' : 'TWO', '長回し');
-    else if (sw.name.startsWith('LIS'))
-      cut(talker === 'A' ? 'CU_A' : talker === 'B' ? 'CU_B' : 'TWO', '戻し');
+  if (talker === 'both' && target.name !== 'TWO' && target.age > 1.4) setTarget('TWO','同時発話');
+  if (target.silence > 2.2 && target.name !== 'WIDE') setTarget('WIDE','沈黙');
+  if (target.age > target.maxAge){
+    if (target.name === 'CU_A' && talker === 'A')
+      setTarget(Math.random() < 0.6 ? 'LIS_B' : 'TWO', '長回し');
+    else if (target.name === 'CU_B' && talker === 'B')
+      setTarget(Math.random() < 0.6 ? 'LIS_A' : 'TWO', '長回し');
+    else if (target.name.startsWith('LIS'))
+      setTarget(talker === 'A' ? 'CU_A' : talker === 'B' ? 'CU_B' : 'TWO', '戻し');
     else if (talker === 'A' || talker === 'B')
-      cut('CU_' + talker, 'テンポ');
-    else sw.age = 0;
+      setTarget('CU_' + talker, 'テンポ');
+    else target.age = 0;
   }
 }
 
 function cameraTick(dt, t){
-  const target = frameTarget(sw.name);
+  // アンカー・距離は狙いへゆっくり追いつく（カットの衝撃を作らない）
+  const kFollow = 1 - Math.exp(-0.9 * dt);
+  cam.anchor.lerp(target.anchor, kFollow);
+  cam.radius += (target.radius - cam.radius) * (1 - Math.exp(-0.75 * dt));
 
-  // カット直後は素早く寄り（プッシュイン）、その後はゆっくり追従に切り替える
-  const pushP = Math.min(1, sw.age / sw.pushDur);
-  const speed = THREE.MathUtils.lerp(3.4, 1.15, pushP);
-  const k = 1 - Math.exp(-speed * dt); // フレームレート非依存の減衰
+  // 常時、回り込み角が漂い続ける（止まっている瞬間を作らない）。
+  // 周期の違う波を重ねて、機械的な等速運動に見えないようにする。
+  const wSlow = Math.sin(t*0.045 + cam.driftSeed) * 0.5 + Math.sin(t*0.017 + cam.driftSeed*2.1) * 0.3;
+  const wFast = Math.sin(t*0.55 + cam.driftSeed*3.3) * 0.02; // 手持ち風の細かい揺れ
+  const tightness = THREE.MathUtils.clamp(cam.radius / 3.2, 0.22, 1); // 寄るほど振れを抑える
 
-  // 手持ちオペレーター風の、ごく僅かな横ドリフト（アップ・2ショットのみ）
-  const driftAmp = (sw.name === 'TWO' || sw.name.startsWith('CU')) ? 0.035 : 0;
-  target.pos.x += Math.sin(t * 0.33 + driftSeed) * driftAmp;
+  const azTarget = target.azBias + wSlow * 0.4 * tightness + wFast;
+  const elTarget = 0.05 + Math.sin(t*0.03 + cam.driftSeed*1.7) * 0.03 * tightness + wFast*0.5;
+  cam.az += (azTarget - cam.az) * (1 - Math.exp(-0.5 * dt));
+  cam.el += (elTarget - cam.el) * (1 - Math.exp(-0.5 * dt));
 
-  camera.position.lerp(target.pos, k);
-  camLook.lerp(target.look, k);
+  // 環境ショット：会話と無関係に、部屋や天井をふらっと見る一瞬（引き・沈黙時のみ）
+  cam.atmoT -= dt;
+  if (cam.atmoT <= 0 && (target.name === 'WIDE' || target.silence > 1.2)){
+    cam.atmo = 1; cam.atmoT = 11 + Math.random()*9;
+  }
+  cam.atmo = Math.max(0, cam.atmo - dt*0.22);
+  const elFinal = cam.el + cam.atmo * 0.55;
+  const radiusFinal = cam.radius + cam.atmo * 1.3;
+
+  const pos = new THREE.Vector3(
+    cam.anchor.x + radiusFinal * Math.sin(cam.az) * Math.cos(elFinal),
+    cam.anchor.y + radiusFinal * Math.sin(elFinal) + 0.14,
+    cam.anchor.z + radiusFinal * Math.cos(cam.az) * Math.cos(elFinal)
+  );
+  camera.position.lerp(pos, 1 - Math.exp(-1.4 * dt));
+  camLook.lerp(cam.anchor, 1 - Math.exp(-1.6 * dt));
   camera.lookAt(camLook);
 }
+
 
 /* ══════════ UI 配線 ══════════ */
 const tallyText = document.getElementById('tallyText');
@@ -541,7 +550,7 @@ let playing = false;
 document.getElementById('startBtn').onclick = () => {
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   document.getElementById('overlay').remove();
-  cut('WIDE','開始');
+  setTarget('WIDE','開始');
 };
 pickA.onchange = e => e.target.files[0] && spk.A.loadVRM(e.target.files[0]);
 pickB.onchange = e => e.target.files[0] && spk.B.loadVRM(e.target.files[0]);
@@ -572,11 +581,11 @@ playBtn.onclick = () => {
   if (audioCtx?.state === 'suspended') audioCtx.resume();
 };
 autoBtn.onclick = () => {
-  sw.auto = !sw.auto;
-  autoBtn.classList.toggle('on', sw.auto);
+  target.auto = !target.auto;
+  autoBtn.classList.toggle('on', target.auto);
 };
 document.querySelectorAll('[data-shot]').forEach(b => {
-  b.onclick = () => { sw.auto = false; autoBtn.classList.remove('on'); cut(b.dataset.shot, '手動'); };
+  b.onclick = () => { target.auto = false; autoBtn.classList.remove('on'); setTarget(b.dataset.shot, '手動'); };
 });
 
 /* ══════════ メインループ ══════════ */

@@ -399,32 +399,37 @@ function pseudoTick(dt, t){
   }
 }
 
-/* ══════════ カメラ：漂う一台のカメラ ══════════ */
+/* ══════════ カメラ：固定カメラ数台のマルチカム方式 ══════════ */
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
 function headA(){ return spk.A.headWorld(tmpA); }
 function headB(){ return spk.B.headWorld(tmpB); }
 
-/* 参考動画の観察：カットで切り替わっているのではなく、
-   一台のカメラが常にゆっくり動き続けていて、時々被写体に寄る。
-   なので「ショットへ瞬間移動→静止」ではなく、
-   常時「アンカー（今どこを見てるか）」「距離」「回り込み角度」を
-   ゆっくり変化させ続ける球面座標のリグにする。 */
+/* 実際の対談・ポッドキャスト撮影を調べ直した結果：
+   本物のマルチカム収録は「1台のカメラが常に動き続ける」のではなく、
+   固定された数台のカメラ（引き・A用・B用・カットアウェイ用）を
+   編集でパッパッと切り替える方式が基本（ワイド＋各人のアップで構成し、
+   話者が変わったらカットするのが定石。参照：ポッドキャスト業界の
+   3カメラ構成、および会話シーンの定番「shot/reverse shot」）。
+   さらに、アップは真正面ではなく相手側へ振った「肩越し」に近い角度
+   （OTS = over-the-shoulder）にするのが会話シーンの標準。
+   なので土台をハードカット優先に戻し、常時の揺れは手持ち程度の
+   ごく僅かなものだけに抑える。なめらかなパンは「時々混ざる演出」に格下げ。 */
 const cam = {
   anchor: new THREE.Vector3(0, 1.35, 0),
   radius: 3.2,
-  az: 0.18,          // 現在の水平回り込み角（ラジアン）
-  el: 0.05,          // 現在の仰角
+  az: 0.18, el: 0.05,
   driftSeed: Math.random() * 10,
-  atmoT: 5 + Math.random()*5,  // 次の「環境ショット」までの残り時間
-  atmo: 0,                     // 環境ショットの効き具合 0..1
 };
 const camLook = new THREE.Vector3(0, 1.15, 0);
+
+const ATMO_POS  = new THREE.Vector3(1.1, 1.65, -1.1);
+const ATMO_LOOK = new THREE.Vector3(0.2, 2.55, -2.2); // 天井照明・壁パネル方向（カットアウェイ用の固定カメラ）
 
 const target = {
   auto: true,
   name: null, age: 0, maxAge: 6,
   anchor: new THREE.Vector3(0, 1.35, 0), radius: 3.2, azBias: 0.18,
-  pendingSpk: null, pendingT: 0, silence: 0, cutCount: 0,
+  pendingSpk: null, pendingT: 0, silence: 0, cutCount: 0, atmoCooldown: 6,
 };
 
 function fitDistance(halfWidth, minDist){
@@ -435,24 +440,18 @@ function fitDistance(halfWidth, minDist){
 }
 
 // 球面座標（アンカー中心・回り込み角・仰角・距離）→ ワールド座標
-function sphericalPos(anchor, az, el, radius, atmo){
-  atmo = atmo || 0;
-  const r = radius + atmo * 1.3;
-  const e = el + atmo * 0.55;
+function sphericalPos(anchor, az, el, radius){
   return new THREE.Vector3(
-    anchor.x + r * Math.sin(az) * Math.cos(e),
-    anchor.y + r * Math.sin(e) + 0.14,
-    anchor.z + r * Math.cos(az) * Math.cos(e)
+    anchor.x + radius * Math.sin(az) * Math.cos(el),
+    anchor.y + radius * Math.sin(el) + 0.14,
+    anchor.z + radius * Math.cos(az) * Math.cos(el)
   );
 }
 
-/* setTarget：狙い（アンカー・距離・回り込みのバイアス）を更新する。
-   常時漂うだけだと単調なので、ここで「なめらかに追いつく」か
-   「パッと瞬間切り替える」かをその場で決める：
-   ・AアップとBアップの入れ替え（話者交代）は必ずハードカット
-     　→ 対談番組で一番「切り替わった」感が出る場所だから
-   ・それ以外の遷移も3割くらいの確率でハードカットを混ぜる
-   ・「引き」へ戻るときは必ずなめらかに（沈黙でパッと引くと安っぽく見える） */
+/* setTarget：狙い（アンカー・距離・回り込み角）を更新する。
+   ・AアップとBアップの入れ替え、カットアウェイの出入りは必ずハードカット
+   ・それ以外も基本ハードカット優先（実写のマルチカムに合わせる）
+   ・「引き」だけは五分五分——沈黙でのパンも味として残す */
 function setTarget(name, why){
   if (name === target.name) return;
   const prevName = target.name;
@@ -460,43 +459,53 @@ function setTarget(name, why){
   target.maxAge = name.startsWith('LIS') ? 2.2 + Math.random()*1.5 : 5.5 + Math.random()*4;
   target.cutCount++;
 
-  const hA = headA().clone(), hB = headB().clone();
-  const mid = hA.clone().lerp(hB, 0.5);
-  switch(name){
-    case 'WIDE':
-      target.anchor.copy(mid).setY(1.35);
-      target.radius = fitDistance(1.6, 3.2); target.azBias = 0.18; break;
-    case 'TWO':
-      target.anchor.copy(mid).setY(mid.y - 0.08);
-      target.radius = fitDistance(Math.abs(hA.x - hB.x)/2 + 0.62, 1.8); target.azBias = 0.12; break;
-    case 'CU_A':
-      target.anchor.copy(hA); target.radius = 1.05; target.azBias = 0.36; break;
-    case 'CU_B':
-      target.anchor.copy(hB); target.radius = 1.05; target.azBias = -0.36; break;
-    case 'LIS_A':
-      target.anchor.copy(hA); target.radius = 1.6; target.azBias = 0.58; break;
-    case 'LIS_B':
-      target.anchor.copy(hB); target.radius = 1.6; target.azBias = -0.58; break;
-  }
-
-  const isCUSwap = prevName && prevName.startsWith('CU') && name.startsWith('CU') && prevName !== name;
-  const hardCut = name !== 'WIDE' && (isCUSwap || Math.random() < 0.3);
-  if (hardCut){
-    cam.anchor.copy(target.anchor);
-    cam.radius = target.radius;
-    cam.az = target.azBias + (Math.random() - 0.5) * 0.08; // 毎回寸分同じ画にならないよう微差
-    cam.el = 0.05;
-    const pos = sphericalPos(cam.anchor, cam.az, cam.el, cam.radius, cam.atmo);
-    camera.position.copy(pos);
-    camLook.copy(cam.anchor);
+  if (name === 'ATMO'){
+    camera.position.copy(ATMO_POS);
+    camLook.copy(ATMO_LOOK);
     camera.lookAt(camLook);
+  } else {
+    const hA = headA().clone(), hB = headB().clone();
+    const mid = hA.clone().lerp(hB, 0.5);
+    switch(name){
+      case 'WIDE':
+        target.anchor.copy(mid).setY(1.35);
+        target.radius = fitDistance(1.6, 3.2); target.azBias = 0.18; break;
+      case 'TWO':
+        target.anchor.copy(mid).setY(mid.y - 0.08);
+        target.radius = fitDistance(Math.abs(hA.x - hB.x)/2 + 0.62, 1.8); target.azBias = 0.12; break;
+      case 'CU_A': // Bの肩越しに近い角度でAを狙う（OTS寄り）
+        target.anchor.copy(hA); target.radius = 0.98; target.azBias = 0.62; break;
+      case 'CU_B':
+        target.anchor.copy(hB); target.radius = 0.98; target.azBias = -0.62; break;
+      case 'LIS_A':
+        target.anchor.copy(hA); target.radius = 1.55; target.azBias = 0.5; break;
+      case 'LIS_B':
+        target.anchor.copy(hB); target.radius = 1.55; target.azBias = -0.5; break;
+    }
+
+    const isCUSwap = prevName && prevName.startsWith('CU') && name.startsWith('CU') && prevName !== name;
+    const isAtmoEdge = prevName === 'ATMO';
+    const baseProb = name === 'WIDE' ? 0.5 : 0.78;
+    const hardCut = isCUSwap || isAtmoEdge || Math.random() < baseProb;
+    if (hardCut){
+      cam.anchor.copy(target.anchor);
+      cam.radius = target.radius;
+      cam.az = target.azBias + (Math.random() - 0.5) * 0.06; // 毎回寸分同じ画にならないよう微差
+      cam.el = 0.05;
+      const pos = sphericalPos(cam.anchor, cam.az, cam.el, cam.radius);
+      camera.position.copy(pos);
+      camLook.copy(cam.anchor);
+      camera.lookAt(camLook);
+    }
+    target._lastHardCut = hardCut;
   }
 
-  const label = { WIDE:'引き', TWO:'2ショット', CU_A:'Aアップ', CU_B:'Bアップ',
-                  LIS_A:'Aリアクション', LIS_B:'Bリアクション' }[name];
+  const label = { WIDE:'引き', TWO:'2ショット', CU_A:'Aアップ(OTS)', CU_B:'Bアップ(OTS)',
+                  LIS_A:'Aリアクション', LIS_B:'Bリアクション', ATMO:'カットアウェイ' }[name];
   tallyText.textContent = `${String(target.cutCount).padStart(2,'0')}｜${label}`;
   const line = document.createElement('div');
-  line.textContent = `${hardCut ? '✂︎カット' : '〜パン'}｜${label}  ←${why}`;
+  const styleTag = name === 'ATMO' ? '✂︎カット' : (target._lastHardCut ? '✂︎カット' : '〜パン');
+  line.textContent = `${styleTag}｜${label}  ←${why}`;
   shotLog.prepend(line);
   while (shotLog.children.length > 5) shotLog.lastChild.remove();
 }
@@ -506,6 +515,7 @@ function switcherTick(dt){
   const talker = a && b ? 'both' : a ? 'A' : b ? 'B' : null;
   target.age += dt;
   target.silence = talker ? 0 : target.silence + dt;
+  target.atmoCooldown -= dt;
   if (!target.auto) return;
 
   const curCU = target.name === 'CU_A' ? 'A' : target.name === 'CU_B' ? 'B' : null;
@@ -520,8 +530,15 @@ function switcherTick(dt){
     } else target.pendingSpk = null;
   }
   if (talker === 'both' && target.name !== 'TWO' && target.age > 1.4) setTarget('TWO','同時発話');
-  if (target.silence > 2.2 && target.name !== 'WIDE') setTarget('WIDE','沈黙');
-  if (target.age > target.maxAge){
+  // カットアウェイ：引きのまま沈黙が続いたら、たまに部屋の別カメラへ逃がす
+  if (target.name === 'WIDE' && target.silence > 3.2 && target.atmoCooldown <= 0){
+    setTarget('ATMO','間つなぎ'); target.atmoCooldown = 10 + Math.random()*8;
+  } else if (target.name === 'ATMO' && target.age > 2 + Math.random()*1.3){
+    setTarget('WIDE','戻し');
+  } else if (target.silence > 2.2 && target.name !== 'WIDE' && target.name !== 'ATMO'){
+    setTarget('WIDE','沈黙');
+  }
+  if (target.name !== 'ATMO' && target.age > target.maxAge){
     if (target.name === 'CU_A' && talker === 'A')
       setTarget(Math.random() < 0.6 ? 'LIS_B' : 'TWO', '長回し');
     else if (target.name === 'CU_B' && talker === 'B')
@@ -535,29 +552,30 @@ function switcherTick(dt){
 }
 
 function cameraTick(dt, t){
-  // アンカー・距離は狙いへゆっくり追いつく（カットの衝撃を作らない）
+  if (target.name === 'ATMO'){
+    // カットアウェイ中は完全固定カメラ（手持ちのごく僅かな揺れのみ）
+    const jx = Math.sin(t*0.6 + cam.driftSeed*3.3) * 0.01;
+    const jy = Math.sin(t*0.44 + cam.driftSeed*1.8) * 0.008;
+    camera.position.set(ATMO_POS.x + jx, ATMO_POS.y + jy, ATMO_POS.z);
+    camLook.copy(ATMO_LOOK);
+    camera.lookAt(camLook);
+    return;
+  }
+
+  // アンカー・距離は狙いへ追いつく（ハードカット時はすでに一致しているので実質動かない）
   const kFollow = 1 - Math.exp(-0.9 * dt);
   cam.anchor.lerp(target.anchor, kFollow);
   cam.radius += (target.radius - cam.radius) * (1 - Math.exp(-0.75 * dt));
 
-  // 常時、回り込み角が漂い続ける（止まっている瞬間を作らない）。
-  // 周期の違う波を重ねて、機械的な等速運動に見えないようにする。
-  const wSlow = Math.sin(t*0.045 + cam.driftSeed) * 0.5 + Math.sin(t*0.017 + cam.driftSeed*2.1) * 0.3;
-  const wFast = Math.sin(t*0.55 + cam.driftSeed*3.3) * 0.02; // 手持ち風の細かい揺れ
-  const tightness = THREE.MathUtils.clamp(cam.radius / 3.2, 0.22, 1); // 寄るほど振れを抑える
+  // 常時の動きは「手持ちの微振動」程度に抑える（大きく回り込むパンは廃止）
+  const wFast = Math.sin(t*0.55 + cam.driftSeed*3.3) * 0.012;
+  const tightness = THREE.MathUtils.clamp(cam.radius / 3.2, 0.25, 1);
+  const azTarget = target.azBias + wFast * tightness;
+  const elTarget = 0.05 + Math.sin(t*0.11 + cam.driftSeed*1.7) * 0.012 * tightness;
+  cam.az += (azTarget - cam.az) * (1 - Math.exp(-0.7 * dt));
+  cam.el += (elTarget - cam.el) * (1 - Math.exp(-0.7 * dt));
 
-  const azTarget = target.azBias + wSlow * 0.4 * tightness + wFast;
-  const elTarget = 0.05 + Math.sin(t*0.03 + cam.driftSeed*1.7) * 0.03 * tightness + wFast*0.5;
-  cam.az += (azTarget - cam.az) * (1 - Math.exp(-0.5 * dt));
-  cam.el += (elTarget - cam.el) * (1 - Math.exp(-0.5 * dt));
-
-  // 環境ショット：会話と無関係に、部屋や天井をふらっと見る一瞬（引き・沈黙時のみ）
-  cam.atmoT -= dt;
-  if (cam.atmoT <= 0 && (target.name === 'WIDE' || target.silence > 1.2)){
-    cam.atmo = 1; cam.atmoT = 11 + Math.random()*9;
-  }
-  cam.atmo = Math.max(0, cam.atmo - dt*0.22);
-  const pos = sphericalPos(cam.anchor, cam.az, cam.el, cam.radius, cam.atmo);
+  const pos = sphericalPos(cam.anchor, cam.az, cam.el, cam.radius);
   camera.position.lerp(pos, 1 - Math.exp(-1.4 * dt));
   camLook.lerp(cam.anchor, 1 - Math.exp(-1.6 * dt));
   camera.lookAt(camLook);

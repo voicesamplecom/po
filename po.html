@@ -277,8 +277,8 @@ class Speaker {
     setBone('spine',  m.breathe, m.sway*0.5, 0);
     setBone('chest',  m.breathe*0.6, 0, 0);
     setBone('upperChest', m.breathe*0.4, 0, 0);
-    setBone('neck',   m.talkNod*0.4 + m.nodAmt*0.4, 0, m.sway*0.2);
-    setBone('head',   m.talkNod + m.nodAmt, 0, m.sway*0.3);
+    setBone('neck',   m.talkNod*0.4 + m.nodAmt*0.4, (m.yaw||0)*0.3, m.sway*0.2);
+    setBone('head',   m.talkNod + m.nodAmt, (m.yaw||0)*0.55, m.sway*0.3);
     // 腕・脚：決めポーズをほぼ保持しつつ、ごく微量だけ生きた揺らぎを混ぜる（2%程度の発想）
     const micro = 0.012;
     ['leftShoulder','rightShoulder','leftUpperArm','rightUpperArm',
@@ -288,7 +288,18 @@ class Speaker {
       setBone(name, Math.sin(m.t*0.8 + this.phase + i)*micro, 0, 0);
     });
   }
-  update(dt, t){
+  /* 相手の方向への首の向き（ヨー）を、自分のローカル座標系で計算。
+     「抜け」の空間に視線が刺さって初めて構図が成立する（アイラインの原則）。 */
+  gazeYaw(partner){
+    if (!partner) return 0;
+    const self = this.headWorld(new THREE.Vector3());
+    const other = partner.headWorld(new THREE.Vector3());
+    const dir = other.sub(self);
+    const local = dir.applyQuaternion(this.root.quaternion.clone().invert());
+    let yaw = Math.atan2(local.x, local.z); // 正面(+Z)基準の水平角
+    return THREE.MathUtils.clamp(yaw, -0.65, 0.65);
+  }
+  update(dt, t, partner){
     const lv = this.level;
     // 口パク
     if (this.vrm?.expressionManager){
@@ -305,28 +316,42 @@ class Speaker {
     }
     if (this.nod > 0) this.nod = Math.max(0, this.nod - dt*2.2);
 
-    // 姿勢（呼吸＋発話ジェスチャー＋相槌）
+    // 姿勢（呼吸＋発話ジェスチャー＋相槌＋相手を見る首振り）
     const breathe = Math.sin(t*1.4 + this.phase) * 0.015;
     const talkNod = this.speaking ? Math.sin(t*4.5 + this.phase) * 0.05 * Math.min(1,lv*5) : 0;
     const sway    = this.speaking ? Math.sin(t*2.1 + this.phase) * 0.04 : Math.sin(t*0.7+this.phase)*0.012;
     const nodAmt  = Math.sin(this.nod * Math.PI) * 0.18;
+    // 首振りは滑らかに追従（会話中は視線がほぼ相手に固定される）
+    const yawGoal = this.gazeYaw(partner);
+    this.yaw = (this.yaw || 0) + (yawGoal - (this.yaw || 0)) * (1 - Math.exp(-3 * dt));
+
+    // 目：VRMのlookAtで相手の頭を見る（頭の向きより先まで目が動く）
+    if (this.vrm?.lookAt && partner){
+      const src = partner.vrm
+        ? partner.vrm.humanoid.getNormalizedBoneNode('head')
+        : partner.mann.head;
+      if (this.vrm.lookAt.target !== src) this.vrm.lookAt.target = src;
+    }
 
     if (this.vrm && this.pose){
       // 決めポーズが読み込み済み：ポーズ基準で微振動を上乗せ
-      this.applyPosedMotion({ breathe, talkNod, sway, nodAmt, t });
+      this.applyPosedMotion({ breathe, talkNod, sway, nodAmt, t, yaw: this.yaw });
       this.vrm.update(dt);
     } else if (this.vrm){
       // 決めポーズ未読み込み：暫定のT/Aポーズのまま最低限の首・体幹だけ動かす
       const h = this.vrm.humanoid;
       const head  = h.getNormalizedBoneNode('head');
+      const neck  = h.getNormalizedBoneNode('neck');
       const spine = h.getNormalizedBoneNode('spine');
       const chest = h.getNormalizedBoneNode('chest') || spine;
-      if (head){ head.rotation.x = talkNod + nodAmt + breathe*0.5; head.rotation.z = sway*0.5; }
-      if (spine){ spine.rotation.y = sway; spine.rotation.x = breathe; }
+      if (head){ head.rotation.x = talkNod + nodAmt + breathe*0.5; head.rotation.y = this.yaw*0.55; head.rotation.z = sway*0.5; }
+      if (neck){ neck.rotation.y = this.yaw*0.3; }
+      if (spine){ spine.rotation.y = sway + this.yaw*0.1; spine.rotation.x = breathe; }
       if (chest && chest!==spine){ chest.rotation.x = breathe*0.6; }
       this.vrm.update(dt);
     } else {
       this.mann.head.rotation.x = talkNod + nodAmt;
+      this.mann.head.rotation.y = this.yaw*0.8;
       this.mann.group.rotation.z = sway*0.4;
       this.mann.group.position.y = breathe*0.3;
     }
@@ -499,11 +524,11 @@ function setTarget(name, why){
       case 'CU_A': // Bの肩越しに近い角度でAを狙う（OTS寄り）＋Bの方向へ抜け
         target.anchor.copy(hA); target.radius = 1.6; target.azBias = 0.55;
         target.elBias = pickElevation();
-        target.lookOffset = lookRoomOffset(hA, hB, 0.22); break;
+        target.lookOffset = lookRoomOffset(hA, hB, 0.18); break;
       case 'CU_B':
         target.anchor.copy(hB); target.radius = 1.6; target.azBias = -0.55;
         target.elBias = pickElevation();
-        target.lookOffset = lookRoomOffset(hB, hA, 0.22); break;
+        target.lookOffset = lookRoomOffset(hB, hA, 0.18); break;
       case 'LIS_A': // 聞き手のリアクションは少し見上げ気味＋抜けはやや控えめ
         target.anchor.copy(hA); target.radius = 2.05; target.azBias = 0.48;
         target.elBias = -0.1;
@@ -672,8 +697,8 @@ function loop(){
   const t = clock.elapsedTime;
   if (playing){ pseudoTick(dt, t); } else { chan.A.raw = 0; chan.B.raw = 0; }
   readLevels();
-  spk.A.update(dt, t);
-  spk.B.update(dt, t);
+  spk.A.update(dt, t, spk.B);
+  spk.B.update(dt, t, spk.A);
   if (playing) switcherTick(dt);
   cameraTick(dt, t);
   document.querySelector('#meterA i').style.width = Math.min(100, spk.A.level*900) + '%';

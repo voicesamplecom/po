@@ -522,16 +522,24 @@ function setTarget(name, why){
         target.radius = fitDistance(sep/2 + 0.62, 2.4); target.azBias = 0.12;
         target.elBias = Math.random() < 0.25 ? 0.3 : 0.09;
         target.slide *= 0.6; break;
-      case 'TWO_A': // A主体でBも画面に入るダーティショット（Bの肩越し気味）
-        target.anchor.copy(hA.clone().lerp(hB, 0.3));
-        target.radius = fitDistance(sep/2 + 0.52, 2.2); target.azBias = 0.32;
-        target.elBias = 0.09;
-        target.lookOffset = lookRoomOffset(hA, hB, 0.1).setY(-0.07); break;
-      case 'TWO_B': // B主体でAも画面に入る
-        target.anchor.copy(hB.clone().lerp(hA, 0.3));
-        target.radius = fitDistance(sep/2 + 0.52, 2.2); target.azBias = -0.32;
-        target.elBias = 0.09;
-        target.lookOffset = lookRoomOffset(hB, hA, 0.1).setY(-0.07); break;
+      case 'TWO_A': { // A主体：Bの背中側へ深く回り込む肩越し2ショット
+        // 軸沿いに撮るほど二人の画面上の間隔が縮む→投影後の幅から距離を逆算すれば
+        // 「寄っているのに両者フレーム内」が成立する
+        const az = 0.85;
+        target.anchor.copy(mid).setY(mid.y - 0.04);
+        target.azBias = az;
+        target.radius = fitDistance((sep/2) * Math.cos(az) + 0.42, 1.5);
+        target.elBias = 0.07;
+        target.lookOffset = lookRoomOffset(hA, hB, 0.08).setY(-0.07);
+      } break;
+      case 'TWO_B': { // B主体：Aの背中側から
+        const az = 0.85;
+        target.anchor.copy(mid).setY(mid.y - 0.04);
+        target.azBias = -az;
+        target.radius = fitDistance((sep/2) * Math.cos(az) + 0.42, 1.5);
+        target.elBias = 0.07;
+        target.lookOffset = lookRoomOffset(hB, hA, 0.08).setY(-0.07);
+      } break;
       case 'CU_A': // Bの肩越しに近い角度でAを狙う（OTS寄り）＋Bの方向へ抜け
         target.anchor.copy(hA); target.radius = 1.6; target.azBias = 0.55;
         target.elBias = pickElevation();

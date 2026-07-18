@@ -526,28 +526,28 @@ function setTarget(name, why){
         target.anchor.copy(hA.clone().lerp(hB, 0.3));
         target.radius = fitDistance(sep/2 + 0.52, 2.2); target.azBias = 0.32;
         target.elBias = 0.09;
-        target.lookOffset = lookRoomOffset(hA, hB, 0.1); break;
+        target.lookOffset = lookRoomOffset(hA, hB, 0.1).setY(-0.07); break;
       case 'TWO_B': // B主体でAも画面に入る
         target.anchor.copy(hB.clone().lerp(hA, 0.3));
         target.radius = fitDistance(sep/2 + 0.52, 2.2); target.azBias = -0.32;
         target.elBias = 0.09;
-        target.lookOffset = lookRoomOffset(hB, hA, 0.1); break;
+        target.lookOffset = lookRoomOffset(hB, hA, 0.1).setY(-0.07); break;
       case 'CU_A': // Bの肩越しに近い角度でAを狙う（OTS寄り）＋Bの方向へ抜け
         target.anchor.copy(hA); target.radius = 1.6; target.azBias = 0.55;
         target.elBias = pickElevation();
-        target.lookOffset = lookRoomOffset(hA, hB, 0.18); break;
+        target.lookOffset = lookRoomOffset(hA, hB, 0.18).setY(-0.09); break;
       case 'CU_B':
         target.anchor.copy(hB); target.radius = 1.6; target.azBias = -0.55;
         target.elBias = pickElevation();
-        target.lookOffset = lookRoomOffset(hB, hA, 0.18); break;
+        target.lookOffset = lookRoomOffset(hB, hA, 0.18).setY(-0.09); break;
       case 'LIS_A': // 聞き手のリアクションは少し見上げ気味＋抜けはやや控えめ
         target.anchor.copy(hA); target.radius = 2.05; target.azBias = 0.48;
         target.elBias = -0.1;
-        target.lookOffset = lookRoomOffset(hA, hB, 0.16); break;
+        target.lookOffset = lookRoomOffset(hA, hB, 0.16).setY(-0.09); break;
       case 'LIS_B':
         target.anchor.copy(hB); target.radius = 2.05; target.azBias = -0.48;
         target.elBias = -0.1;
-        target.lookOffset = lookRoomOffset(hB, hA, 0.16); break;
+        target.lookOffset = lookRoomOffset(hB, hA, 0.16).setY(-0.09); break;
     }
 
     const isCUSwap = prevName && prevName.startsWith('CU') && name.startsWith('CU') && prevName !== name;

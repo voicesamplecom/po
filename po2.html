@@ -80,7 +80,7 @@
     <input type="file" id="poseA">
     <button class="fileBtn" id="poseBBtn" onclick="poseB.click()">B：決めポーズ…</button>
     <input type="file" id="poseB">
-    <button id="flipJointBtn" class="on">変換ON</button>
+    <button id="flipJointBtn" class="on">変換②</button>
   </div>
   <div class="row">
     <span class="lbl">音声</span>
@@ -202,7 +202,7 @@ function makeMannequin(color){
   return { group:g, head, mouth, body };
 }
 
-let poseFlipZ = true; // ReverseZ変換のON/OFF（切替ボタンで判定用）
+let poseConvMode = 1; // 座標系変換モード 0..3（切替ボタンで循環）
 
 class Speaker {
   constructor(id, color){
@@ -268,17 +268,21 @@ class Speaker {
       alert('ポーズの読み込みに失敗：' + e.message);
     }
   }
-  /* ReverseZ変換（x,y符号反転）のON/OFFを切り替えてポーズを作り直す。
-     どちらが正しいかはモデル・ツールの組み合わせ次第で変わるため、
-     目視で判定できるよう両状態をボタンで行き来できるようにしてある */
+  /* 座標系変換は「利き手系の反転」と「前後180°」という独立した2軸があり、
+     組み合わせで4通り存在する。モデルのVRMバージョンや作成ツールで正解が
+     変わるため、4モードを目視で切り替えて判定できるようにしてある。
+     ①raw ②ReverseZ(-x,-y) ③Y180(-x,-z) ④両方(-y,-z) */
   rebuildPose(){
     if (!this.poseRaw) return;
     const map = {};
     for (const name in this.poseRaw){
       const q = this.poseRaw[name];
-      map[name] = poseFlipZ
-        ? new THREE.Quaternion(-q.x, -q.y, q.z, q.w)
-        : new THREE.Quaternion( q.x,  q.y, q.z, q.w);
+      switch(poseConvMode){
+        case 0: map[name] = new THREE.Quaternion( q.x,  q.y,  q.z, q.w); break;
+        case 1: map[name] = new THREE.Quaternion(-q.x, -q.y,  q.z, q.w); break;
+        case 2: map[name] = new THREE.Quaternion(-q.x,  q.y, -q.z, q.w); break;
+        case 3: map[name] = new THREE.Quaternion( q.x, -q.y, -q.z, q.w); break;
+      }
     }
     this.pose = map;
   }
@@ -711,9 +715,8 @@ poseB.onchange = e => {
 audA.onchange = e => e.target.files[0] && hookAudio('A', e.target.files[0]);
 audB.onchange = e => e.target.files[0] && hookAudio('B', e.target.files[0]);
 flipJointBtn.onclick = () => {
-  poseFlipZ = !poseFlipZ;
-  flipJointBtn.textContent = poseFlipZ ? '変換ON' : '変換OFF';
-  flipJointBtn.classList.toggle('on', poseFlipZ);
+  poseConvMode = (poseConvMode + 1) % 4;
+  flipJointBtn.textContent = '変換' + '①②③④'[poseConvMode];
   spk.A.rebuildPose();
   spk.B.rebuildPose();
 };

@@ -93,6 +93,13 @@
     <button id="playBtn">▶ 再生</button>
   </div>
   <div class="row">
+    <span class="lbl">背景</span>
+    <button id="bgStudioBtn" class="on">スタジオ</button>
+    <button id="bgGreenBtn">グリーンバック</button>
+    <button class="fileBtn" id="bgImgBtn" onclick="bgImg.click()">画像…</button>
+    <input type="file" id="bgImg">
+  </div>
+  <div class="row">
     <span class="lbl">カメラ</span>
     <button id="autoBtn" class="on">AUTO</button>
     <button data-shot="WIDE">引き</button>
@@ -182,6 +189,22 @@ const panel = new THREE.Mesh(
   new THREE.PlaneGeometry(3.2, 1.8),
   new THREE.MeshStandardMaterial({ color:0x161c26, roughness:0.6 }));
 panel.position.set(0, 1.9, -2.45); scene.add(panel);
+
+/* ── 背景モード：スタジオ／グリーンバック／画像 ── */
+const setMeshes = [floor, rug, wall, panel];
+const STUDIO_BG = new THREE.Color(0x14181f);
+const GREEN_BG  = new THREE.Color(0x00b140); // クロマキー標準グリーン
+let bgTexture = null;
+function setBackgroundMode(mode){
+  const showSet = mode === 'studio';
+  setMeshes.forEach(m => m.visible = showSet);
+  scene.fog = showSet ? new THREE.Fog(0x14181f, 6, 14) : null;
+  if (mode === 'studio')      scene.background = STUDIO_BG;
+  else if (mode === 'green')  scene.background = GREEN_BG;
+  else if (mode === 'image' && bgTexture) scene.background = bgTexture;
+  for (const [id, m] of [['bgStudioBtn','studio'],['bgGreenBtn','green'],['bgImgBtn','image']])
+    document.getElementById(id).classList.toggle('on', m === mode);
+}
 
 /* ══════════ 話者（VRM or デモ人形）══════════ */
 const SEAT = {
@@ -715,6 +738,19 @@ poseB.onchange = e => {
 };
 audA.onchange = e => e.target.files[0] && hookAudio('A', e.target.files[0]);
 audB.onchange = e => e.target.files[0] && hookAudio('B', e.target.files[0]);
+bgStudioBtn.onclick = () => setBackgroundMode('studio');
+bgGreenBtn.onclick = () => setBackgroundMode('green');
+bgImg.onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  new THREE.TextureLoader().load(url, tex => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    bgTexture = tex;
+    setBackgroundMode('image');
+    URL.revokeObjectURL(url);
+  }, undefined, () => alert('画像の読み込みに失敗（PNG/JPGを選んでください）'));
+};
 convABtn.onclick = () => {
   spk.A.convMode = (spk.A.convMode + 1) % 4;
   convABtn.textContent = 'A変換' + '①②③④'[spk.A.convMode];

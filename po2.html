@@ -80,7 +80,8 @@
     <input type="file" id="poseA">
     <button class="fileBtn" id="poseBBtn" onclick="poseB.click()">B：決めポーズ…</button>
     <input type="file" id="poseB">
-    <button id="flipJointBtn" class="on">変換②</button>
+    <button id="convABtn" class="on">A変換④</button>
+    <button id="convBBtn" class="on">B変換②</button>
   </div>
   <div class="row">
     <span class="lbl">音声</span>
@@ -202,11 +203,10 @@ function makeMannequin(color){
   return { group:g, head, mouth, body };
 }
 
-let poseConvMode = 1; // 座標系変換モード 0..3（切替ボタンで循環）
-
 class Speaker {
-  constructor(id, color){
+  constructor(id, color, convMode){
     this.id = id;
+    this.convMode = convMode; // 座標系変換モード 0..3（キャラごとに正解が違いうる。実測：A=③番目=モード3、B=①番目=モード1）
     this.root = new THREE.Group();
     this.root.position.x = SEAT[id].x;
     this.root.rotation.y = SEAT[id].ry;
@@ -269,15 +269,16 @@ class Speaker {
     }
   }
   /* 座標系変換は「利き手系の反転」と「前後180°」という独立した2軸があり、
-     組み合わせで4通り存在する。モデルのVRMバージョンや作成ツールで正解が
-     変わるため、4モードを目視で切り替えて判定できるようにしてある。
+     組み合わせで4通り存在する。正解は「ポーズファイル×モデル」の組み合わせで
+     決まるため（VRM0/VRM1、書き出しツールの違い）、キャラごとに独立して
+     4モードを目視で切り替えて判定できるようにしてある。
      ①raw ②ReverseZ(-x,-y) ③Y180(-x,-z) ④両方(-y,-z) */
   rebuildPose(){
     if (!this.poseRaw) return;
     const map = {};
     for (const name in this.poseRaw){
       const q = this.poseRaw[name];
-      switch(poseConvMode){
+      switch(this.convMode){
         case 0: map[name] = new THREE.Quaternion( q.x,  q.y,  q.z, q.w); break;
         case 1: map[name] = new THREE.Quaternion(-q.x, -q.y,  q.z, q.w); break;
         case 2: map[name] = new THREE.Quaternion(-q.x,  q.y, -q.z, q.w); break;
@@ -386,7 +387,7 @@ class Speaker {
     }
   }
 }
-const spk = { A: new Speaker('A', 0xd9b38c), B: new Speaker('B', 0x8cb4d9) };
+const spk = { A: new Speaker('A', 0xd9b38c, 3), B: new Speaker('B', 0x8cb4d9, 1) };
 window.flip = id => { spk[id].root.rotation.y += Math.PI; };
 
 /* ══════════ 音声入力 ══════════ */
@@ -714,10 +715,14 @@ poseB.onchange = e => {
 };
 audA.onchange = e => e.target.files[0] && hookAudio('A', e.target.files[0]);
 audB.onchange = e => e.target.files[0] && hookAudio('B', e.target.files[0]);
-flipJointBtn.onclick = () => {
-  poseConvMode = (poseConvMode + 1) % 4;
-  flipJointBtn.textContent = '変換' + '①②③④'[poseConvMode];
+convABtn.onclick = () => {
+  spk.A.convMode = (spk.A.convMode + 1) % 4;
+  convABtn.textContent = 'A変換' + '①②③④'[spk.A.convMode];
   spk.A.rebuildPose();
+};
+convBBtn.onclick = () => {
+  spk.B.convMode = (spk.B.convMode + 1) % 4;
+  convBBtn.textContent = 'B変換' + '①②③④'[spk.B.convMode];
   spk.B.rebuildPose();
 };
 pseudoBtn.onclick = () => {

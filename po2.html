@@ -102,6 +102,7 @@
     <button id="motPlayBBtn">B▶</button>
     <button id="motXZBtn">移動OFF</button>
     <button id="handTestBtn">✊テスト</button>
+    <button id="curlAxisBtn">軸X+</button>
   </div>
   <div class="row">
     <span class="lbl">背景</span>
@@ -260,12 +261,22 @@ const HAND_CURL = {
 };
 const FINGER_NAMES = ['Thumb','Index','Middle','Ring','Little'];
 const FINGER_SEGS = ['Proximal','Intermediate','Distal'];
+// 曲げ軸候補：ボーンのローカル軸のどれが「曲げ」に対応するかはモデル次第で変わるため、
+// 目視で切り替えて判定する（❓の対象。捻れて見える＝軸違いの典型症状）
+const CURL_AXES = [
+  new THREE.Vector3(1,0,0),  new THREE.Vector3(-1,0,0),
+  new THREE.Vector3(0,0,1),  new THREE.Vector3(0,0,-1),
+  new THREE.Vector3(0,1,0),  new THREE.Vector3(0,-1,0),
+];
+const CURL_AXIS_LABELS = ['X+','X-','Z+','Z-','Y+','Y-'];
+let curlAxisIdx = 0;
 function applyHandPreset(vrm, sideLower, name, weight){
   const key = (name || '').replace(/^[LR]_/, ''); // "L_Open"→"Open" のように接頭辞を剥がす
   const table = HAND_CURL[key] || HAND_CURL.Natural; // 未知の名前はNaturalへ安全側フォールバック
   const w = typeof weight === 'number' ? weight : 1;
   const side = sideLower === 'left' ? 'Left' : 'Right';
   const h = vrm.humanoid;
+  const axis = CURL_AXES[curlAxisIdx];
   let found = 0; // 実際に見つかった指ボーン数（診断用）
   FINGER_NAMES.forEach(finger => {
     const curls = table[finger];
@@ -275,8 +286,7 @@ function applyHandPreset(vrm, sideLower, name, weight){
       const node = h.getNormalizedBoneNode(boneName);
       if (!node) return;
       found++;
-      // 屈曲軸はX想定（見た目が逆に曲がる場合はここの符号を反転する）
-      node.rotation.set(curls[i] * w, 0, 0);
+      node.quaternion.setFromAxisAngle(axis, curls[i] * w);
     });
   });
   return found;
@@ -941,6 +951,10 @@ motXZBtn.onclick = () => {
 handTestBtn.onclick = () => {
   handTestFist = !handTestFist;
   handTestBtn.classList.toggle('on', handTestFist);
+};
+curlAxisBtn.onclick = () => {
+  curlAxisIdx = (curlAxisIdx + 1) % CURL_AXES.length;
+  curlAxisBtn.textContent = '軸' + CURL_AXIS_LABELS[curlAxisIdx];
 };
 pseudoBtn.onclick = () => {
   pseudoMode = !pseudoMode;

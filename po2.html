@@ -246,6 +246,38 @@ function convQuat(q, mode){
   }
 }
 
+/* 手のプリセット：LeftHandAnimationName等が参照する「指の形」の実データは
+   渡されていないため、名前から妥当な曲げ量を再現する近似実装。
+   数値・曲げ軸は目視確認前提（違和感があれば数値かsignを直す）。
+   曲げ量は各指[根本,第二関節,先端]の屈曲角(rad)、0=まっすぐ。 */
+const HAND_CURL = {
+  Open:    { Thumb:[0.05,0.05,0.05], Index:[0,0,0],       Middle:[0,0,0],       Ring:[0,0,0],       Little:[0,0,0] },
+  Natural: { Thumb:[0.15,0.10,0.05], Index:[0.15,0.20,0.15], Middle:[0.18,0.22,0.15], Ring:[0.18,0.22,0.15], Little:[0.20,0.22,0.15] },
+  Relaxed: { Thumb:[0.20,0.15,0.10], Index:[0.25,0.30,0.20], Middle:[0.28,0.32,0.20], Ring:[0.28,0.32,0.20], Little:[0.30,0.32,0.20] },
+  Fist:    { Thumb:[0.50,0.40,0.30], Index:[0.90,1.10,0.90], Middle:[0.95,1.15,0.90], Ring:[0.95,1.15,0.90], Little:[0.90,1.10,0.85] },
+  Point:   { Thumb:[0.40,0.30,0.20], Index:[0,0,0],         Middle:[0.90,1.10,0.90], Ring:[0.90,1.10,0.90], Little:[0.85,1.05,0.85] },
+};
+const FINGER_NAMES = ['Thumb','Index','Middle','Ring','Little'];
+const FINGER_SEGS = ['Proximal','Intermediate','Distal'];
+function applyHandPreset(vrm, sideLower, name, weight){
+  const key = (name || '').replace(/^[LR]_/, ''); // "L_Open"→"Open" のように接頭辞を剥がす
+  const table = HAND_CURL[key] || HAND_CURL.Natural; // 未知の名前はNaturalへ安全側フォールバック
+  const w = typeof weight === 'number' ? weight : 1;
+  const side = sideLower === 'left' ? 'Left' : 'Right';
+  const h = vrm.humanoid;
+  FINGER_NAMES.forEach(finger => {
+    const curls = table[finger];
+    FINGER_SEGS.forEach((seg, i) => {
+      const raw = side + finger + seg;
+      const boneName = raw.charAt(0).toLowerCase() + raw.slice(1);
+      const node = h.getNormalizedBoneNode(boneName);
+      if (!node) return;
+      // 屈曲軸はX想定（見た目が逆に曲がる場合はここの符号を反転する）
+      node.rotation.set(curls[i] * w, 0, 0);
+    });
+  });
+}
+
 class Speaker {
   constructor(id, color, convMode){
     this.id = id;
@@ -394,6 +426,12 @@ class Speaker {
         this.hipsRest.y + ly,
         this.hipsRest.z + (this.motionXZ ? -lz : 0) // Unity→Three.jsでZは反転
       );
+    }
+    // 手：モーション中は固定プリセット（申し送り仕様通り、時間変化はさせない）
+    const mr = this.motionRaw;
+    if (mr){
+      if (mr.LeftHandAnimationName)  applyHandPreset(this.vrm, 'left',  mr.LeftHandAnimationName,  mr.LeftHandAnimationWeight);
+      if (mr.RightHandAnimationName) applyHandPreset(this.vrm, 'right', mr.RightHandAnimationName, mr.RightHandAnimationWeight);
     }
   }
   /* ポーズ済みの体に、呼吸・発話・相槌の微振動を「上乗せ」する。

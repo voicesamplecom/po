@@ -261,22 +261,26 @@ const HAND_CURL = {
 };
 const FINGER_NAMES = ['Thumb','Index','Middle','Ring','Little'];
 const FINGER_SEGS = ['Proximal','Intermediate','Distal'];
-// 曲げ軸候補：ボーンのローカル軸のどれが「曲げ」に対応するかはモデル次第で変わるため、
-// 目視で切り替えて判定する（❓の対象。捻れて見える＝軸違いの典型症状）
+// 曲げ軸候補（手動オーバーライド診断用）
 const CURL_AXES = [
   new THREE.Vector3(1,0,0),  new THREE.Vector3(-1,0,0),
   new THREE.Vector3(0,0,1),  new THREE.Vector3(0,0,-1),
   new THREE.Vector3(0,1,0),  new THREE.Vector3(0,-1,0),
 ];
 const CURL_AXIS_LABELS = ['X+','X-','Z+','Z-','Y+','Y-'];
-let curlAxisIdx = 0;
+// 実測確定値：左右は鏡写しの関係なので曲げ軸の符号も左右で逆になる（左Z+／右Z-）
+const LEFT_CURL_AXIS  = new THREE.Vector3(0,0,1);
+const RIGHT_CURL_AXIS = new THREE.Vector3(0,0,-1);
+let curlAxisOverride = null; // nullなら自動（左右反転）。手動オーバーライド時は両手に同じ軸を強制
 function applyHandPreset(vrm, sideLower, name, weight){
   const key = (name || '').replace(/^[LR]_/, ''); // "L_Open"→"Open" のように接頭辞を剥がす
   const table = HAND_CURL[key] || HAND_CURL.Natural; // 未知の名前はNaturalへ安全側フォールバック
   const w = typeof weight === 'number' ? weight : 1;
   const side = sideLower === 'left' ? 'Left' : 'Right';
   const h = vrm.humanoid;
-  const axis = CURL_AXES[curlAxisIdx];
+  const axis = curlAxisOverride !== null
+    ? CURL_AXES[curlAxisOverride]
+    : (sideLower === 'left' ? LEFT_CURL_AXIS : RIGHT_CURL_AXIS);
   let found = 0; // 実際に見つかった指ボーン数（診断用）
   FINGER_NAMES.forEach(finger => {
     const curls = table[finger];

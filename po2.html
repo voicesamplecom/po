@@ -101,6 +101,7 @@
     <button id="motPlayABtn">A▶</button>
     <button id="motPlayBBtn">B▶</button>
     <button id="motXZBtn">移動OFF</button>
+    <button id="handTestBtn">✊テスト</button>
   </div>
   <div class="row">
     <span class="lbl">背景</span>
@@ -281,6 +282,8 @@ function applyHandPreset(vrm, sideLower, name, weight){
   return found;
 }
 
+let handTestFist = false; // ✊テストボタン：ONの間、両手をFistプリセットで強制上書き（診断用）
+
 class Speaker {
   constructor(id, color, convMode){
     this.id = id;
@@ -376,6 +379,7 @@ class Speaker {
       this.rebuildMotion();
       this.motionT = 0;
       this.motionActive = true; // 読み込み即再生
+      this._handDiagShown = false; // 新しいモーションでは診断ログを出し直す
     }catch(e){
       alert('モーションの読み込みに失敗：' + e.message);
     }
@@ -431,6 +435,12 @@ class Speaker {
       );
     }
     // 手：モーション中は固定プリセット（申し送り仕様通り、時間変化はさせない）
+    // ✊テストボタンONの間は診断のためFistで強制上書き
+    if (handTestFist){
+      applyHandPreset(this.vrm, 'left', 'Fist', 1);
+      applyHandPreset(this.vrm, 'right', 'Fist', 1);
+      return;
+    }
     const mr = this.motionRaw;
     if (mr){
       let found = 0;
@@ -927,6 +937,10 @@ motXZBtn.onclick = () => {
   spk.A.motionXZ = on; spk.B.motionXZ = on;
   motXZBtn.textContent = on ? '移動ON' : '移動OFF';
   motXZBtn.classList.toggle('on', on);
+};
+handTestBtn.onclick = () => {
+  handTestFist = !handTestFist;
+  handTestBtn.classList.toggle('on', handTestFist);
 };
 pseudoBtn.onclick = () => {
   pseudoMode = !pseudoMode;

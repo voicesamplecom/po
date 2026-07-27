@@ -265,6 +265,7 @@ function applyHandPreset(vrm, sideLower, name, weight){
   const w = typeof weight === 'number' ? weight : 1;
   const side = sideLower === 'left' ? 'Left' : 'Right';
   const h = vrm.humanoid;
+  let found = 0; // 実際に見つかった指ボーン数（診断用）
   FINGER_NAMES.forEach(finger => {
     const curls = table[finger];
     FINGER_SEGS.forEach((seg, i) => {
@@ -272,10 +273,12 @@ function applyHandPreset(vrm, sideLower, name, weight){
       const boneName = raw.charAt(0).toLowerCase() + raw.slice(1);
       const node = h.getNormalizedBoneNode(boneName);
       if (!node) return;
+      found++;
       // 屈曲軸はX想定（見た目が逆に曲がる場合はここの符号を反転する）
       node.rotation.set(curls[i] * w, 0, 0);
     });
   });
+  return found;
 }
 
 class Speaker {
@@ -430,8 +433,17 @@ class Speaker {
     // 手：モーション中は固定プリセット（申し送り仕様通り、時間変化はさせない）
     const mr = this.motionRaw;
     if (mr){
-      if (mr.LeftHandAnimationName)  applyHandPreset(this.vrm, 'left',  mr.LeftHandAnimationName,  mr.LeftHandAnimationWeight);
-      if (mr.RightHandAnimationName) applyHandPreset(this.vrm, 'right', mr.RightHandAnimationName, mr.RightHandAnimationWeight);
+      let found = 0;
+      if (mr.LeftHandAnimationName)  found += applyHandPreset(this.vrm, 'left',  mr.LeftHandAnimationName,  mr.LeftHandAnimationWeight);
+      if (mr.RightHandAnimationName) found += applyHandPreset(this.vrm, 'right', mr.RightHandAnimationName, mr.RightHandAnimationWeight);
+      if (!this._handDiagShown){
+        this._handDiagShown = true;
+        const line = document.createElement('div');
+        line.textContent = found === 0
+          ? `⚠️${this.id}：指ボーンが見つからず手プリセット未反映`
+          : `${this.id}：指ボーン${found}本に反映済み`;
+        shotLog.prepend(line);
+      }
     }
   }
   /* ポーズ済みの体に、呼吸・発話・相槌の微振動を「上乗せ」する。

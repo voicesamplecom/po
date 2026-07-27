@@ -93,6 +93,16 @@
     <button id="playBtn">▶ 再生</button>
   </div>
   <div class="row">
+    <span class="lbl">モーション</span>
+    <button class="fileBtn" id="motABtn" onclick="motA.click()">A：モーション…</button>
+    <input type="file" id="motA">
+    <button class="fileBtn" id="motBBtn" onclick="motB.click()">B：モーション…</button>
+    <input type="file" id="motB">
+    <button id="motPlayABtn">A▶</button>
+    <button id="motPlayBBtn">B▶</button>
+    <button id="motXZBtn">移動OFF</button>
+  </div>
+  <div class="row">
     <span class="lbl">背景</span>
     <button id="bgStudioBtn" class="on">スタジオ</button>
     <button id="bgGreenBtn">グリーンバック</button>
@@ -226,10 +236,23 @@ function makeMannequin(color){
   return { group:g, head, mouth, body };
 }
 
+// 座標系変換（4モード）：ポーズとモーションで共通
+function convQuat(q, mode){
+  switch(mode){
+    case 0: return new THREE.Quaternion( q.x,  q.y,  q.z, q.w);
+    case 1: return new THREE.Quaternion(-q.x, -q.y,  q.z, q.w);
+    case 2: return new THREE.Quaternion(-q.x,  q.y, -q.z, q.w);
+    default: return new THREE.Quaternion( q.x, -q.y, -q.z, q.w);
+  }
+}
+
 class Speaker {
   constructor(id, color, convMode){
     this.id = id;
     this.convMode = convMode; // 座標系変換モード 0..3（キャラごとに正解が違いうる。実測：A=③番目=モード3、B=①番目=モード1）
+    this.motion = null; this.motionRaw = null;
+    this.motionT = 0; this.motionActive = false;
+    this.motionXZ = false; // 移動（XZ）を反映するか。ステージが狭いので初期OFF
     this.root = new THREE.Group();
     this.root.position.x = SEAT[id].x;
     this.root.rotation.y = SEAT[id].ry;
@@ -263,6 +286,7 @@ class Speaker {
       this.root.remove(this.mann.group);
       this.vrm = vrm;
       this.root.add(vrm.scene);
+      this.hipsRest = vrm.humanoid.getNormalizedBoneNode('hips')?.position.clone() || null;
       // 腕の初期姿勢はここでは決め打ちしない（モデルごとに軸の向きが違うため信頼できない）
       // → 決めポーズは「ポーズ読み込み」で外部ファイルから与える方式に統一
     }catch(e){
@@ -287,6 +311,7 @@ class Speaker {
       if (Object.keys(raw).length === 0) throw new Error('有効なボーンが0件');
       this.poseRaw = raw;
       this.rebuildPose();
+      this.motionActive = false; // 排他制御：ポーズ切替はモーション停止を意味する
     }catch(e){
       alert('ポーズの読み込みに失敗：' + e.message);
     }
@@ -300,15 +325,76 @@ class Speaker {
     if (!this.poseRaw) return;
     const map = {};
     for (const name in this.poseRaw){
-      const q = this.poseRaw[name];
-      switch(this.convMode){
-        case 0: map[name] = new THREE.Quaternion( q.x,  q.y,  q.z, q.w); break;
-        case 1: map[name] = new THREE.Quaternion(-q.x, -q.y,  q.z, q.w); break;
-        case 2: map[name] = new THREE.Quaternion(-q.x,  q.y, -q.z, q.w); break;
-        case 3: map[name] = new THREE.Quaternion( q.x, -q.y, -q.z, q.w); break;
-      }
+      map[name] = convQuat(this.poseRaw[name], this.convMode);
     }
     this.pose = map;
+  }
+  /* ══ sbml.motion.v1 ══
+     keyposes[].BoneDefinitionはvroidposeと同一構造なので、
+     座標系変換（convQuat）もポーズと同じ経路を通す。 */
+  async loadMotion(file){
+    try{
+      const data = JSON.parse(await file.text());
+      if (data.format !== 'sbml.motion.v1') throw new Error('sbml.motion.v1形式ではない');
+      if (!Array.isArray(data.keyposes) || data.keyposes.length < 2) throw new Error('keyposesが不足');
+      this.motionRaw = data;
+      this.rebuildMotion();
+      this.motionT = 0;
+      this.motionActive = true; // 読み込み即再生
+    }catch(e){
+      alert('モーションの読み込みに失敗：' + e.message);
+    }
+  }
+  rebuildMotion(){
+    if (!this.motionRaw) return;
+    this.motion = {
+      duration: this.motionRaw.duration,
+      loop: !!this.motionRaw.loop,
+      keys: this.motionRaw.keyposes.map(kp => {
+        const bones = {}; let hips = null;
+        for (const key in kp.BoneDefinition){
+          const v = kp.BoneDefinition[key];
+          if (key === 'HipsPosition'){ hips = { x:v.x, y:v.y, z:v.z }; continue; }
+          if (typeof v.w !== 'number') continue;
+          const boneName = key.charAt(0).toLowerCase() + key.slice(1);
+          bones[boneName] = convQuat(v, this.convMode);
+        }
+        return { time: kp.time, bones, hips };
+      }),
+    };
+  }
+  /* 経過時間からキーポーズ2点をslerp補間して適用。
+     Hips位置は「先頭キーポーズからの差分」をレスト位置に足す方式——
+     体格差による絶対高さのズレ（浮き/沈み）を自動で吸収できる */
+  applyMotion(dt){
+    this.motionT += dt;
+    const m = this.motion;
+    const t = m.loop ? this.motionT % m.duration : Math.min(this.motionT, m.duration);
+    const keys = m.keys;
+    let i = 0;
+    while (i < keys.length - 2 && keys[i+1].time <= t) i++;
+    const a = keys[i], b = keys[i+1];
+    const span = b.time - a.time;
+    const f = span > 1e-6 ? THREE.MathUtils.clamp((t - a.time) / span, 0, 1) : 0;
+    const h = this.vrm.humanoid;
+    for (const name in a.bones){
+      const node = h.getNormalizedBoneNode(name);
+      if (!node) continue;
+      if (b.bones[name]) node.quaternion.slerpQuaternions(a.bones[name], b.bones[name], f);
+      else node.quaternion.copy(a.bones[name]);
+    }
+    if (a.hips && b.hips && this.hipsRest){
+      const k0 = keys[0].hips;
+      const lx = THREE.MathUtils.lerp(a.hips.x, b.hips.x, f) - k0.x;
+      const ly = THREE.MathUtils.lerp(a.hips.y, b.hips.y, f) - k0.y;
+      const lz = THREE.MathUtils.lerp(a.hips.z, b.hips.z, f) - k0.z;
+      const node = h.getNormalizedBoneNode('hips');
+      if (node) node.position.set(
+        this.hipsRest.x + (this.motionXZ ?  lx : 0),
+        this.hipsRest.y + ly,
+        this.hipsRest.z + (this.motionXZ ? -lz : 0) // Unity→Three.jsでZは反転
+      );
+    }
   }
   /* ポーズ済みの体に、呼吸・発話・相槌の微振動を「上乗せ」する。
      決めポーズ自体は壊さず、各ボーンの姿勢に小さな回転を掛け合わせるだけ。 */
@@ -386,7 +472,11 @@ class Speaker {
       if (this.vrm.lookAt.target !== src) this.vrm.lookAt.target = src;
     }
 
-    if (this.vrm && this.pose){
+    if (this.vrm && this.motion && this.motionActive){
+      // モーション再生中：ポーズ・揺らぎ・首振りは止めてモーションに専念
+      this.applyMotion(dt);
+      this.vrm.update(dt);
+    } else if (this.vrm && this.pose){
       // 決めポーズが読み込み済み：ポーズ基準で微振動を上乗せ
       this.applyPosedMotion({ breathe, talkNod, sway, nodAmt, t, yaw: this.yaw });
       this.vrm.update(dt);
@@ -754,12 +844,39 @@ bgImg.onchange = e => {
 convABtn.onclick = () => {
   spk.A.convMode = (spk.A.convMode + 1) % 4;
   convABtn.textContent = 'A変換' + '①②③④'[spk.A.convMode];
-  spk.A.rebuildPose();
+  spk.A.rebuildPose(); spk.A.rebuildMotion();
 };
 convBBtn.onclick = () => {
   spk.B.convMode = (spk.B.convMode + 1) % 4;
   convBBtn.textContent = 'B変換' + '①②③④'[spk.B.convMode];
-  spk.B.rebuildPose();
+  spk.B.rebuildPose(); spk.B.rebuildMotion();
+};
+motA.onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  spk.A.loadMotion(f).then(() => {
+    if (spk.A.motion){ motABtn.textContent = 'A：モーション✓'; motPlayABtn.classList.add('on'); }
+  });
+};
+motB.onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  spk.B.loadMotion(f).then(() => {
+    if (spk.B.motion){ motBBtn.textContent = 'B：モーション✓'; motPlayBBtn.classList.add('on'); }
+  });
+};
+function toggleMotion(s, btn){
+  if (!s.motion) return;
+  if (s.motionActive){ s.motionActive = false; btn.classList.remove('on'); } // 停止→ポーズに復帰
+  else { s.motionT = 0; s.motionActive = true; btn.classList.add('on'); }   // 頭から再生
+}
+motPlayABtn.onclick = () => toggleMotion(spk.A, motPlayABtn);
+motPlayBBtn.onclick = () => toggleMotion(spk.B, motPlayBBtn);
+motXZBtn.onclick = () => {
+  const on = !spk.A.motionXZ;
+  spk.A.motionXZ = on; spk.B.motionXZ = on;
+  motXZBtn.textContent = on ? '移動ON' : '移動OFF';
+  motXZBtn.classList.toggle('on', on);
 };
 pseudoBtn.onclick = () => {
   pseudoMode = !pseudoMode;

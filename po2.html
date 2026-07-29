@@ -103,6 +103,7 @@
     <button id="motXZBtn">移動OFF</button>
     <button id="handTestBtn">✊テスト</button>
     <button id="curlAxisBtn">軸X+</button>
+    <button id="blendDurBtn">遷移:1.0s</button>
   </div>
   <div class="row">
     <span class="lbl">背景</span>
@@ -298,6 +299,15 @@ function applyHandPreset(vrm, sideLower, name, weight){
 
 let handTestFist = false; // ✊テストボタン：ONの間、両手をFistプリセットで強制上書き（診断用）
 
+/* ══════════ 中立ポーズへの汎用ブレンド ══════════
+   申し送り(2026-07-29)対応: モーション開始・終了時の瞬間切り替えを廃し、
+   「今の実際の姿勢」から「目標姿勢」へ、指定秒数・イージングで滑らかに繋ぐ。
+   秒数・イージングはここ1箇所で持ち、全キャラ・全モーション共通で効かせる。 */
+let BLEND_DURATION = 1.0; // 秒。UIの「遷移」ボタンで切り替え可能
+const BLEND_PRESETS = [0.5, 1.0, 1.5, 2.0];
+function easeInQuad(t){ return t * t; }             // 開始用: 徐々に加速
+function easeOutQuad(t){ return 1 - (1 - t) * (1 - t); } // 終了用: 徐々に減速
+
 class Speaker {
   constructor(id, color, convMode){
     this.id = id;
@@ -305,6 +315,7 @@ class Speaker {
     this.motion = null; this.motionRaw = null;
     this.motionT = 0; this.motionActive = false;
     this.motionXZ = false; // 移動（XZ）を反映するか。ステージが狭いので初期OFF
+    this.blend = null; // 中立ポーズ⇔モーション間の遷移状態(nullなら遷移中でない)
     this.root = new THREE.Group();
     this.root.position.x = SEAT[id].x;
     this.root.rotation.y = SEAT[id].ry;
@@ -391,15 +402,15 @@ class Speaker {
       if (!Array.isArray(data.keyposes) || data.keyposes.length < 2) throw new Error('keyposesが不足');
       this.motionRaw = data;
       this.rebuildMotion();
-      this.motionT = 0;
-      this.motionActive = true; // 読み込み即再生
       this._handDiagShown = false; // 新しいモーションでは診断ログを出し直す
+      this.startBlendIn(); // 読み込み即再生だが、今の姿勢からモーション1コマ目へ滑らかに繋ぐ
     }catch(e){
       alert('モーションの読み込みに失敗：' + e.message);
     }
   }
   rebuildMotion(){
     if (!this.motionRaw) return;
+    const prevBones = {}; // 直前キーポーズのボーン値(符号連続性チェック用)
     this.motion = {
       duration: this.motionRaw.duration,
       loop: !!this.motionRaw.loop,
@@ -410,7 +421,13 @@ class Speaker {
           if (key === 'HipsPosition'){ hips = { x:v.x, y:v.y, z:v.z }; continue; }
           if (typeof v.w !== 'number') continue;
           const boneName = key.charAt(0).toLowerCase() + key.slice(1);
-          bones[boneName] = convQuat(v, this.convMode);
+          const q = convQuat(v, this.convMode);
+          // 二重被覆(q と -q は同じ回転)による逆回転SLERPの保険:
+          // 直前キーポーズと内積が負なら符号反転して連続性を保つ
+          const prev = prevBones[boneName];
+          if (prev && q.dot(prev) < 0){ q.x=-q.x; q.y=-q.y; q.z=-q.z; q.w=-q.w; }
+          bones[boneName] = q;
+          prevBones[boneName] = q;
         }
         return { time: kp.time, bones, hips };
       }),
@@ -422,6 +439,11 @@ class Speaker {
   applyMotion(dt){
     this.motionT += dt;
     const m = this.motion;
+    // 非ループのモーションが最終キーポーズに到達したら、中立ポーズへ自動的にブレンドアウトする
+    if (!m.loop && this.motionT >= m.duration && !this.blend){
+      this.startBlendOut();
+      return;
+    }
     const t = m.loop ? this.motionT % m.duration : Math.min(this.motionT, m.duration);
     const keys = m.keys;
     let i = 0;
@@ -468,6 +490,83 @@ class Speaker {
           : `${this.id}：指ボーン${found}本に反映済み`;
         shotLog.prepend(line);
       }
+    }
+  }
+  /* ══ 中立ポーズへの汎用ブレンド ══
+     「今の実際のボーン回転(from)」→「目標ボーン回転(to)」を、
+     BLEND_DURATION秒かけてSLERP(回転)・lerp(Hips位置)で繋ぐ。
+     開始(モーションへ入る)はease-in、終了(中立へ戻る)はease-out。
+     ※役割分担についての設計判断(申し送り3章の案A/B):
+       このリグでは「決めポーズ(this.pose)」が既に「モーション再生中でない時に
+       戻る先」として機能しているため、中立ポーズ専用の別入力(案B)は設けず、
+       決めポーズをそのまま中立ポーズとして扱う(案A)。実装コストが低く、
+       現状の「決めポーズ=モーションのハブ」という運用実態にも合っている。
+       将来、決めポーズ(撮影用の任意ポーズ)と中立ポーズ(モーションの起点)の
+       役割を分けたくなったら、this.neutralPose という専用フィールドと
+       専用ファイル選択UIを追加すればよい。 */
+  _snapshotBones(names){
+    const h = this.vrm.humanoid;
+    const snap = {};
+    for (const name of names){
+      const node = h.getNormalizedBoneNode(name);
+      if (node) snap[name] = node.quaternion.clone();
+    }
+    return snap;
+  }
+  startBlendIn(){
+    if (!this.vrm || !this.motion) return;
+    const firstKey = this.motion.keys[0];
+    const names = Object.keys(firstKey.bones);
+    this.blend = {
+      ease: 'in',
+      elapsed: 0,
+      duration: BLEND_DURATION,
+      from: this._snapshotBones(names),
+      to: firstKey.bones,
+      hipsFrom: this.hipsRest ? (this.vrm.humanoid.getNormalizedBoneNode('hips')?.position.clone() || null) : null,
+      hipsTo: this.hipsRest ? this.hipsRest.clone() : null, // モーション先頭=レスト位置(差分0)
+      after: 'motion',
+    };
+    this.motionActive = true; // ブレンド完了後そのままモーション本編へ
+    this.motionT = 0;
+  }
+  startBlendOut(){
+    if (!this.vrm) return;
+    // 中立ポーズ(=決めポーズ)が読み込まれていなければ、瞬間停止のまま(繋ぎようがないため)
+    if (!this.pose){
+      this.motionActive = false;
+      return;
+    }
+    const names = Object.keys(this.pose);
+    this.blend = {
+      ease: 'out',
+      elapsed: 0,
+      duration: BLEND_DURATION,
+      from: this._snapshotBones(names),
+      to: this.pose,
+      hipsFrom: this.hipsRest ? (this.vrm.humanoid.getNormalizedBoneNode('hips')?.position.clone() || null) : null,
+      hipsTo: this.hipsRest ? this.hipsRest.clone() : null, // 決めポーズはHips位置を持たないためレストへ戻す
+      after: 'idle',
+    };
+    this.motionActive = false; // ブレンド中はapplyMotion側の処理は使わない
+  }
+  updateBlend(dt){
+    const b = this.blend;
+    b.elapsed += dt;
+    const rawT = THREE.MathUtils.clamp(b.elapsed / b.duration, 0, 1);
+    const t = b.ease === 'in' ? easeInQuad(rawT) : easeOutQuad(rawT);
+    const h = this.vrm.humanoid;
+    for (const name in b.from){
+      const node = h.getNormalizedBoneNode(name);
+      const to = b.to[name];
+      if (node && to) node.quaternion.slerpQuaternions(b.from[name], to, t);
+    }
+    if (b.hipsFrom && b.hipsTo){
+      const node = h.getNormalizedBoneNode('hips');
+      if (node) node.position.lerpVectors(b.hipsFrom, b.hipsTo, t);
+    }
+    if (rawT >= 1){
+      this.blend = null; // 完了: 以降は通常のapplyMotion/applyPosedMotionに委譲
     }
   }
   /* ポーズ済みの体に、呼吸・発話・相槌の微振動を「上乗せ」する。
@@ -546,7 +645,11 @@ class Speaker {
       if (this.vrm.lookAt.target !== src) this.vrm.lookAt.target = src;
     }
 
-    if (this.vrm && this.motion && this.motionActive){
+    if (this.vrm && this.blend){
+      // 中立ポーズ⇔モーション間の遷移中: それ以外のロジックは休止
+      this.updateBlend(dt);
+      this.vrm.update(dt);
+    } else if (this.vrm && this.motion && this.motionActive){
       // モーション再生中：ポーズ・揺らぎ・首振りは止めてモーションに専念
       this.applyMotion(dt);
       this.vrm.update(dt);
@@ -941,8 +1044,13 @@ motB.onchange = e => {
 };
 function toggleMotion(s, btn){
   if (!s.motion) return;
-  if (s.motionActive){ s.motionActive = false; btn.classList.remove('on'); } // 停止→ポーズに復帰
-  else { s.motionT = 0; s.motionActive = true; btn.classList.add('on'); }   // 頭から再生
+  if (s.motionActive || s.blend){
+    s.startBlendOut(); // 今の姿勢→中立ポーズへease-outで遷移してから停止
+    btn.classList.remove('on');
+  } else {
+    s.startBlendIn(); // 今の姿勢→モーション1コマ目へease-inで遷移してから再生開始
+    btn.classList.add('on');
+  }
 }
 motPlayABtn.onclick = () => toggleMotion(spk.A, motPlayABtn);
 motPlayBBtn.onclick = () => toggleMotion(spk.B, motPlayBBtn);
@@ -959,6 +1067,11 @@ handTestBtn.onclick = () => {
 curlAxisBtn.onclick = () => {
   curlAxisIdx = (curlAxisIdx + 1) % CURL_AXES.length;
   curlAxisBtn.textContent = '軸' + CURL_AXIS_LABELS[curlAxisIdx];
+};
+blendDurBtn.onclick = () => {
+  const idx = BLEND_PRESETS.indexOf(BLEND_DURATION);
+  BLEND_DURATION = BLEND_PRESETS[(idx + 1) % BLEND_PRESETS.length];
+  blendDurBtn.textContent = `遷移:${BLEND_DURATION.toFixed(1)}s`;
 };
 pseudoBtn.onclick = () => {
   pseudoMode = !pseudoMode;
